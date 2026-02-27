@@ -28,7 +28,7 @@ In v0 transaction structure, `output-source` affected output semantics, but the 
 
 ## Technical Specification
 
-`open/hoon/common/tx-engine.hoon` added and wired new signed hash paths:
+`hoon/common/tx-engine.hoon` added and wired new signed hash paths:
 
 - `hashable-unit:source` to encode `(unit source)` deterministically.
 - `sig-hashable:seed` now includes:
@@ -94,4 +94,4 @@ Pre-upgrade mempool transactions may fail verification after rollout and require
 
 - Commit: `28a496501`
 - Files:
-  - `open/hoon/common/tx-engine.hoon`
+  - `hoon/common/tx-engine.hoon`

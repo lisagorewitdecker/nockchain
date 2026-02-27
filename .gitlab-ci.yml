@@ -1,4 +1,5 @@
 stages:
+  - docs
   - kernels
   - test
   - sync
@@ -17,6 +18,36 @@ default:
 variables:
   RUST_LOG: "warn,slogger=off"
   GIT_CLEAN_FLAGS: "-ffdx -e .bazel/"
+
+docs-check:
+  stage: docs
+  needs: []
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID'
+      changes:
+        - "**/*.md"
+        - "scripts/docs/**/*"
+        - "Makefile"
+        - ".gitlab-ci.yml"
+    - if: '$CI_COMMIT_BRANCH == "open"'
+      changes:
+        - "**/*.md"
+        - "scripts/docs/**/*"
+        - "Makefile"
+        - ".gitlab-ci.yml"
+    - if: '$CI_COMMIT_BRANCH =~ /^ci\/open-sync-/'
+      changes:
+        - "**/*.md"
+        - "scripts/docs/**/*"
+        - "Makefile"
+        - ".gitlab-ci.yml"
+    - when: never
+  script:
+    - |
+      nix develop -c bash -c '
+        set -euo pipefail
+        make docs-check
+      '
 
 build-kernels:
   stage: kernels

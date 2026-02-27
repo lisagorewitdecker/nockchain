@@ -28,7 +28,7 @@ The v1 witness path was not yet ready to safely support arbitrary axis commitmen
 
 ## Technical Specification
 
-`open/hoon/common/tx-engine-1.hoon` changed `lock-merkle-proof` hashing/checking:
+`hoon/common/tx-engine-1.hoon` changed `lock-merkle-proof` hashing/checking:
 
 - In `hashable`, replaced `leaf+axis` with fixed hash constant:
   - `6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A`
@@ -91,4 +91,4 @@ Wallet/builder software had to enforce `axis = 1` as a hard production rule.
 
 - Commit: `cc17b1871`
 - Files:
-  - `open/hoon/common/tx-engine-1.hoon`
+  - `hoon/common/tx-engine-1.hoon`

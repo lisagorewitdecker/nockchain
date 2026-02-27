@@ -20,7 +20,7 @@ Versioned lock merkle proofs and fee rebalancing.
 
 ## Summary
 
-Bythos adds a `version` field to `lock-merkle-proof` so the axis is included in witness hashes. It also rebalances fees by lowering `base-fee` to 2^14 and charging inputs at 1/4 the output rate via `input-fee-divisor`.
+Bythos adds a `version` field to `lock-merkle-proof` so the axis is included in witness hashes. It also rebalances fees at activation by lowering the effective base fee from 2^15 to 2^14 and charging inputs at 1/4 the output rate via `input-fee-divisor`.
 
 ## Motivation
 
@@ -173,11 +173,11 @@ $:  v1-phase=@
 ```
 
 **Default values:**
-| Constant | Mainnet | Fakenet |
-|----------|---------|---------|
-| `bythos-phase` | 54,000 | 54,000 |
-| `base-fee` | 16384 (2^14) | 128 |
-| `input-fee-divisor` | 4 | 4 |
+| Constant            | Mainnet      | Fakenet |
+| ------------------- | ------------ | ------- |
+| `bythos-phase`      | 54,000       | 54,000  |
+| `base-fee`          | 16384 (2^14) | 128     |
+| `input-fee-divisor` | 4            | 4       |
 
 Note: Previous `base-fee` was 32768 (2^15).
 
@@ -192,26 +192,29 @@ pub struct BlockchainConstants {
 
 #### Fee Calculation
 
-The `calculate-min-fee` arm now takes a page number and separates seed (output) and witness (input) fees. The input discount only applies at or after `bythos-phase`:
+The `calculate-min-fee` arm now takes a page number and separates seed (output) and witness (input) fees. At `bythos-phase`, both of these changes activate together:
+- base-fee drops from the legacy rate (2x) to configured `base-fee`
+- witness inputs get the `input-fee-divisor` discount
 
 ```hoon
 ++  calculate-min-fee
   |=  [sps=form page-num=page-number]
   ^-  coins
-  =/  seed-word-count=@  (count-seed-words sps)
-  =/  witness-word-count=@
-    %+  roll  ~(tap z-by sps)
-    |=  [[nam=nname sp=spend] acc=@]
-    (add acc (count-witness-words:spend-v1 sp))
+  =/  seed-word-count=@  (count-seed-words [sps page-num])
+  =/  witness-word-count=@  (count-witness-words [sps page-num])
+  =/  bythos-active=?  (gte page-num bythos-phase)
+  ::  pre-bythos uses legacy base-fee (2x configured base-fee)
+  =/  effective-base-fee=coins
+    ?:(bythos-active base-fee (mul 2 base-fee))
   ::  inputs pay discounted fee only at/after bythos activation
   =/  witness-divisor=@
-    ?:  (gte page-num bythos-phase)
+    ?:  bythos-active
       input-fee-divisor
     1
-  ::  outputs (seeds) pay full base-fee per word
-  =/  seed-fee=coins  (mul seed-word-count base-fee)
-  ::  inputs (witnesses) pay base-fee / witness-divisor per word
-  =/  witness-fee=coins  (div (mul witness-word-count base-fee) witness-divisor)
+  ::  outputs (seeds) pay full effective-base-fee per word
+  =/  seed-fee=coins  (mul seed-word-count effective-base-fee)
+  ::  inputs (witnesses) pay effective-base-fee / witness-divisor per word
+  =/  witness-fee=coins  (div (mul witness-word-count effective-base-fee) witness-divisor)
   =/  word-fee=coins  (add seed-fee witness-fee)
   (max word-fee min-fee.data)
 ```
@@ -227,7 +230,7 @@ min_fee = max(
 **Formula (before bythos-phase):**
 ```
 min_fee = max(
-  (seed_words + witness_words) * base_fee,
+  (seed_words + witness_words) * (2 * base_fee),
   min_fee_constant
 )
 ```

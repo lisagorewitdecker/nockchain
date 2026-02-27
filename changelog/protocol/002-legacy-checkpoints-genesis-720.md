@@ -90,4 +90,4 @@ Bootstrap and resync paths become more deterministic, but only if all nodes run 
 
 - Commit: `0ab51fed3`
 - Files:
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`

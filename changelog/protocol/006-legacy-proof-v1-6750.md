@@ -30,11 +30,11 @@ The proving pipeline had moved beyond a single implicit format. Without an expli
 
 ### Versioned Proof Types
 
-`open/hoon/common/ztd/four.hoon` introduced a tagged `proof` form and `proof-version` domain including `%0` and `%1`.
+`hoon/common/ztd/four.hoon` introduced a tagged `proof` form and `proof-version` domain including `%0` and `%1`.
 
 ### Prover Input Contract
 
-`open/hoon/common/stark/prover.hoon`, `open/hoon/common/nock-prover.hoon`, and `open/hoon/common/pow.hoon` switched from positional proof inputs to `prover-input` carrying:
+`hoon/common/stark/prover.hoon`, `hoon/common/nock-prover.hoon`, and `hoon/common/pow.hoon` switched from positional proof inputs to `prover-input` carrying:
 
 - `version`
 - `header`
@@ -45,7 +45,7 @@ Mining effects and miner causes were updated to carry versioned prover input.
 
 ### Consensus Gate
 
-`open/hoon/apps/dumbnet/lib/consensus.hoon` added:
+`hoon/apps/dumbnet/lib/consensus.hoon` added:
 
 - `proof-version-1-start = 6750`
 - `height-to-proof-version(height)` mapping
@@ -108,7 +108,7 @@ Boundary monitoring is required. A miner producing `%0` at `>=6750` is rejected 
 
 - Commit: `af3a12d19`
 - Files:
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
-  - `open/hoon/common/stark/prover.hoon`
-  - `open/hoon/common/pow.hoon`
-  - `open/hoon/common/ztd/four.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/common/stark/prover.hoon`
+  - `hoon/common/pow.hoon`
+  - `hoon/common/ztd/four.hoon`

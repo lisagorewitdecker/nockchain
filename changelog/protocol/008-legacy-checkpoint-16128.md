@@ -91,4 +91,4 @@ All nodes must run identical checkpoint data to avoid deterministic splits.
 
 - Commit: `d85d78320`
 - Files:
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`

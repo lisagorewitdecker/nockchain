@@ -1,5 +1,35 @@
 # Nockchain Wallet
 
+Status: Active
+Owner: Nockchain Maintainers
+Last Reviewed: 2026-02-19
+Canonical/Legacy: Canonical (Tier 1 scoped authority for wallet CLI behavior and operational usage; protocol authority remains in [`PROTOCOL.md`](../../PROTOCOL.md))
+
+## Canonical Scope
+
+This document is Tier 1 canonical for:
+- wallet CLI behavior and user-facing operational workflows.
+- key import/export/watch workflows and endpoint-selection behavior.
+- transaction-construction invocation patterns for supported CLI surfaces.
+
+This document is NOT canonical for:
+- protocol/consensus rule interpretation (use [`PROTOCOL.md`](../../PROTOCOL.md)).
+- node/runtime architecture policy (use [`ARCHITECTURE.md`](../../ARCHITECTURE.md)).
+
+## Failure Modes And Limits
+
+- CLI flags and command behavior can change as wallet internals evolve.
+- Examples can drift if CLI changes are not documented in lockstep.
+- This doc cannot adjudicate protocol disputes; where protocol semantics matter, Tier 0 protocol docs win.
+
+## Verification Contract
+
+When wallet CLI behavior or flags change, update this doc in the same change.
+
+Minimum validation:
+- `make -C open docs-check`
+- `cargo check -p nockchain-wallet`
+
 ## Setup
 
 ### Generate New Key Pair
@@ -222,7 +252,7 @@ Gifts and fees are denominated in nicks (65536 nicks = 1 nock).
 {"kind":"bridge-deposit","evm-address":"0x0123abcd...","amount":500000000}
 ```
 
-- `kind` must be either `p2pkh` or `multisig`
+- `kind` must be `p2pkh`, `multisig`, or `bridge-deposit`
 - `amount` is specified in nicks
 - Multisig objects also require a `threshold` (m) and at least one `addresses` entry
 - Bridge deposits route funds to the Base bridge; `evm-address` expects a 20-byte hex string (40 hex chars, case-insensitive) with or without the `0x` prefix. Only one `%bridge-deposit` output is allowed per transaction, and the bridge enforces a protocol-level minimum gift size.
@@ -254,7 +284,7 @@ nockchain-wallet create-tx \
 
 - The `evm-address` is the Base/ETH recipient; provide exactly 20 bytes of hex (`0x` prefix optional).
 - Only a single bridge deposit output is allowed per transaction.
-- The bridge kernel enforces a minimum deposit amount; use docs/BRIDGE.md for current values.
+- The bridge kernel enforces a minimum deposit amount; treat [`PROTOCOL.md`](../../PROTOCOL.md) as protocol authority, and use [`crates/bridge/docs/README.md`](../bridge/docs/README.md) for current bridge operations.
 
 ```bash
 nockchain-wallet create-tx \

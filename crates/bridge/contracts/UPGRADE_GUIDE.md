@@ -1,232 +1,107 @@
 # MessageInbox Upgrade Guide
 
-This guide covers the process for upgrading the MessageInbox implementation via
-UUPS proxy.
+Status: Active
+Owner: Nockchain Maintainers
+Last Reviewed: 2026-02-20
+Canonical/Legacy: Legacy (bridge contracts upgrade runbook; canonical docs spine starts at [`START_HERE.md`](../../../START_HERE.md))
+
+This guide covers upgrading `MessageInbox` behind the UUPS proxy.
 
 ## Pre-Upgrade Checklist
 
-Before upgrading, ensure:
+- [ ] New implementation tested (`make test`)
+- [ ] Storage layout compatibility reviewed (`forge inspect MessageInbox storage-layout`)
+- [ ] Owner key available (`INBOX_PRIVATE_KEY`)
+- [ ] Correct deployment manifest selected (`DEPLOYMENTS_PATH`)
+- [ ] Rollback plan prepared
 
-- [ ] New implementation has been thoroughly tested
-- [ ] Storage layout is compatible (no storage variable reordering)
-- [ ] All critical functions work correctly in fork tests
-- [ ] Gas usage remains acceptable (<200k for deposits)
-- [ ] Owner private key is secure and accessible
-- [ ] Backup of current deployment addresses
+## Fork Rehearsal
 
-## Fork Testing Procedure
+```bash
+cd crates/bridge/contracts
 
-1. Fork the target network in Tenderly:
-   ```bash
-   tenderly fork spawn --network base-sepolia --project bridge-contracts
-   ```
+# 1) Spawn fork and set env
+tenderly fork spawn --network base-sepolia --project bridge-contracts
+export TENDERLY_RPC_URL="<fork-rpc-url>"
+export INBOX_PRIVATE_KEY="<owner-key>"
+export DEPLOYMENTS_PATH="deployments/fork-test.json"
 
-2. Deploy new implementation to fork:
-   ```bash
-   export TENDERLY_RPC_URL="<fork-rpc-url>"
-   export INBOX_PRIVATE_KEY="<owner-key>"
-   export DEPLOYMENTS_PATH="deployments/fork-test.json"
+# 2) Execute upgrade (interactive prompt expects: yes)
+make upgrade
 
-   # Deploy new implementation
-   forge script forge/Upgrade.s.sol:Upgrade \
-     --rpc-url "$TENDERLY_RPC_URL" \
-     --private-key "$INBOX_PRIVATE_KEY" \
-     --broadcast
-   ```
+# 3) Validate and run integration script
+make validate DEPLOYMENTS_PATH=deployments/fork-test.json
+make integration-test DEPLOYMENTS_PATH=deployments/fork-test.json
+```
 
-3. Run validation:
-   ```bash
-   make validate DEPLOYMENTS_PATH=deployments/fork-test.json
-   ```
+## Production Upgrade
 
-4. Run integration tests:
-   ```bash
-   make integration-test DEPLOYMENTS_PATH=deployments/fork-test.json
-   ```
+```bash
+cd crates/bridge/contracts
+set -a; . ./.env; set +a
+export DEPLOYMENTS_PATH="deployments/base-sepolia.json"
+make upgrade
+```
 
-5. Verify critical functions:
-   - Deposit flow works correctly
-   - Withdrawal flow works correctly
-   - Bridge node updates work
-   - Ownership is preserved
+Notes:
 
-## Upgrade Execution Steps
-
-1. **Prepare environment**:
-   ```bash
-   cd open/crates/bridge/contracts
-   source .env  # or source environments/{network}.example
-   ```
-
-2. **Set deployment path** (if not using default):
-   ```bash
-   export DEPLOYMENTS_PATH="deployments/base-sepolia.json"
-   ```
-
-3. **Build contracts**:
-   ```bash
-   make build
-   ```
-
-4. **Execute upgrade**:
-   ```bash
-   make upgrade
-   ```
-
-   Or manually:
-   ```bash
-   ./scripts/upgrade_tenderly.sh deployments/base-sepolia.json
-   ```
-
-5. **Verify upgrade in Tenderly**:
-   - Check transaction succeeded
-   - Verify proxy implementation address updated
-   - Review storage layout
-
-6. **Run post-upgrade validation**:
-   ```bash
-   make validate
-   ```
-
-7. **Run integration tests**:
-   ```bash
-   make integration-test
-   ```
+- `make upgrade` runs `scripts/upgrade_tenderly.sh`, which prompts `Upgrade MessageInbox? (yes/no):`.
+- The upgrade script deploys a new implementation and calls `upgradeTo(newImplementation)` on proxy.
+- The script does **not** rewrite `messageInboxImplementation` in your deployment JSON. Update the manifest before `make validate`, or validation will fail with proxy mismatch.
 
 ## Post-Upgrade Validation
 
-After upgrading, verify:
-
-- [ ] Proxy points to new implementation
-- [ ] All bridge nodes still configured correctly
-- [ ] Nock token still connected to inbox
-- [ ] Ownership unchanged
-- [ ] Withdrawals still enabled (if expected)
-- [ ] Deposit flow works end-to-end
-- [ ] Withdrawal flow works end-to-end
-
-Use the validation script:
 ```bash
-make validate DEPLOYMENTS_PATH=deployments/{network}.json
+make validate DEPLOYMENTS_PATH=deployments/base-sepolia.json
+make integration-test DEPLOYMENTS_PATH=deployments/base-sepolia.json
 ```
 
-## Emergency Rollback Procedure
+Confirm:
 
-If an upgrade introduces critical issues:
+- Proxy implementation matches deployment manifest.
+- Bridge node set remains intact.
+- `nock.inbox()` still equals proxy.
+- Ownership and withdrawals state are as expected.
 
-1. **Immediately disable withdrawals** (if needed):
-   ```bash
-   make emergency-disable DEPLOYMENTS_PATH=deployments/{network}.json
-   ```
+## Emergency Rollback
 
-2. **Deploy previous implementation**:
-   - Locate previous implementation address from deployment history
-   - Deploy previous version code
-   - Upgrade proxy back to previous implementation:
-     ```bash
-     # Set NEW_IMPL_ADDRESS to previous implementation
-     forge script forge/Upgrade.s.sol:Upgrade \
-       --rpc-url "$TENDERLY_RPC_URL" \
-       --private-key "$INBOX_PRIVATE_KEY" \
-       --broadcast \
-       --sig "upgradeTo(address)" "$NEW_IMPL_ADDRESS"
-     ```
+If the new implementation is bad:
 
-3. **Verify rollback**:
-   ```bash
-   make validate
-   make integration-test
-   ```
-
-4. **Re-enable withdrawals** (if disabled):
-   ```bash
-   make emergency-enable DEPLOYMENTS_PATH=deployments/{network}.json
-   ```
-
-## Storage Layout Compatibility
-
-**CRITICAL**: Never reorder storage variables or change types in a way that
-shifts storage slots. The UUPS pattern allows upgrades, but storage layout
-must remain compatible.
-
-### MessageInbox Storage Layout (v1.0.0)
-
-The contract inherits from OpenZeppelin's upgradeable contracts which use
-namespaced storage (EIP-7201). Our custom storage starts after the inherited
-slots.
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ INHERITED STORAGE (OpenZeppelin Upgradeable Contracts)                       │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Initializable:       Uses EIP-7201 namespaced storage                        │
-│ OwnableUpgradeable:  Uses EIP-7201 namespaced storage (owner address)        │
-│ UUPSUpgradeable:     Uses EIP-7201 namespaced storage                        │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ MESSAGEINBOX CUSTOM STORAGE                                                  │
-├──────┬──────────────────────┬────────────────────────────┬───────────────────┤
-│ Slot │ Variable             │ Type                       │ Size (bytes)      │
-├──────┼──────────────────────┼────────────────────────────┼───────────────────┤
-│ 0-4  │ bridgeNodes          │ address[5]                 │ 160 (5 slots)     │
-│ 5    │ processedDeposits    │ mapping(bytes32 => bool)   │ 32 (slot only)    │
-│ 6    │ withdrawalsEnabled   │ bool                       │ 1 (offset 0)      │
-│ 6    │ nock                 │ address (Nock contract)    │ 20 (offset 1)     │
-└──────┴──────────────────────┴────────────────────────────┴───────────────────┘
-```
-
-**Storage Notes:**
-- `bridgeNodes` occupies slots 0-4 (5 addresses × 32 bytes/slot)
-- `processedDeposits` mapping uses slot 5 as its base slot; actual values are
-  stored at `keccak256(key . slot)`
-- `withdrawalsEnabled` and `nock` are packed into slot 6 (1 byte + 20 bytes = 21 bytes)
-- Constants (`VERSION`, `THRESHOLD`, `SECP256K1_N`, `SECP256K1_HALF_N`) do NOT
-  use storage slots
-
-**Regenerate this layout:**
+1. Optionally pause withdrawals:
 ```bash
-forge inspect MessageInbox storage-layout
+make emergency-disable DEPLOYMENTS_PATH=deployments/base-sepolia.json
+```
+2. Roll proxy to previous implementation address:
+```bash
+export PROXY_ADDRESS="<messageInboxProxy>"
+export OLD_IMPL_ADDRESS="<previous-implementation>"
+cast send "$PROXY_ADDRESS" "upgradeTo(address)" "$OLD_IMPL_ADDRESS" \
+  --rpc-url "$TENDERLY_RPC_URL" \
+  --private-key "$INBOX_PRIVATE_KEY"
+```
+3. Update deployment manifest `messageInboxImplementation` to `OLD_IMPL_ADDRESS`.
+4. Re-run validation/integration checks.
+5. Re-enable withdrawals if paused:
+```bash
+make emergency-enable DEPLOYMENTS_PATH=deployments/base-sepolia.json
 ```
 
-### Safe Upgrade Rules
+## Storage Layout Notes
 
-When adding new storage variables:
-- Add them at the end (after slot 7)
-- Never remove or reorder existing variables
-- Use storage gaps if removing variables
-- New variables will start at slot 8
+Current custom storage layout in `MessageInbox.sol`:
 
-**Example of safe addition:**
-```solidity
-// SAFE: Adding at the end
-uint256 public newVariable;  // Will be slot 8
+- Slots `0..4`: `bridgeNodes` (`address[5]`)
+- Slot `5`: `processedDeposits` mapping base slot
+- Slot `6`: `lastDepositNonce` (`uint256`)
+- Slot `7`: packed `withdrawalsEnabled` (`bool`) + `nock` (`address`)
 
-// UNSAFE: Inserting between existing variables
-// This would shift all subsequent slots and corrupt storage!
-```
+Rules:
 
-### Upgrade Checklist for Storage
+- Never reorder or delete existing storage variables.
+- Append new variables at the end.
+- Re-run `forge inspect MessageInbox storage-layout` before and after every storage change.
 
-- [ ] Run `forge inspect MessageInbox storage-layout` before and after changes
-- [ ] Verify no existing slots have changed position
-- [ ] Verify no types have changed in existing slots
-- [ ] New variables are added at the end only
-- [ ] Increment VERSION constant
+## Versioning
 
-## Version Tracking
-
-The `VERSION` constant in MessageInbox tracks the implementation version.
-Increment it when deploying a new implementation:
-
-```solidity
-string public constant VERSION = "1.1.0";  // Increment for new version
-```
-
-## Notes
-
-- Upgrades are irreversible once executed (except by upgrading again)
-- Always test upgrades on forks before production
-- Keep deployment records for all upgrades
-- Document any breaking changes or migration requirements
-
+`VERSION` is a human-readable implementation tag in `MessageInbox`.  
+Bump it when publishing a new implementation.

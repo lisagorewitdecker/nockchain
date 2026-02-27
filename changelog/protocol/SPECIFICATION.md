@@ -1,5 +1,15 @@
 # Protocol Upgrade Specification Format
 
+Status: Active
+Owner: Nockchain Maintainers
+Last Reviewed: 2026-02-19
+Canonical/Legacy: Canonical (schema/lifecycle authority for `changelog/protocol/*.md`; top-level protocol index authority is [`PROTOCOL.md`](../../PROTOCOL.md))
+
+Use [`PROTOCOL.md`](../../PROTOCOL.md) as the protocol index and active-upgrade selector.
+Canonical protocol source files live under [`changelog/protocol/`](./).
+Use this file as the required schema and lifecycle contract for those source files.
+This schema document does not supersede `PROTOCOL.md`.
+
 This document defines the format and process for documenting protocol upgrades.
 
 ## Overview
@@ -38,21 +48,23 @@ status = "draft"  # draft | final | activated | superseded
 consensus_critical = true
 
 # Activation (filled in after coordination)
-activation_height = 0  # 0 = not yet determined
+activation_height = 0  # 0 = no consensus-height trigger (not yet determined or rollout-gated)
 
 # Dates
 published = "2026-01-19"
-activation_target = ""  # ISO date, must be >= 1 month after published
+activation_target = ""  # ISO date for scheduled activations, should be >= 1 month after published
 
 # People
 authors = ["@nockchain-core"]  # handles preferred; "Name <email>" allowed
 reviewers = ["@nockchain-core"]  # Required before status can be "final"
 
-# If this upgrade replaces a previous one
-supersedes = ""  # e.g., "0.0.9"
-superseded_by = ""  # filled in if this spec is later superseded
+# Release-track lineage metadata
+supersedes = ""  # previous protocol version on the main release track, if any
+superseded_by = ""  # next protocol version on the main release track, if assigned
 +++
 ```
+
+Lineage fields (`supersedes`, `superseded_by`) track release ordering. They do not, by themselves, require `status = "superseded"`.
 
 ### Required Sections
 
@@ -79,7 +91,7 @@ Use code blocks and diagrams where helpful.
 
 #### 4. Activation
 
-- **Height**: The block height at which the upgrade activates (filled in after coordination)
+- **Height**: The block height at which the upgrade activates, or `0` for rollout-gated activation without a consensus height trigger
 - **Coordination**: Any special coordination required during rollout
 
 #### 5. Migration
@@ -103,7 +115,7 @@ Describe any security-sensitive changes, new assumptions, or threat-model shifts
 
 #### 8. Operational Impact
 
-Explain operator-facing impacts: resource usage, fee behavior, monitoring signals, and any rollout risks.
+Explain operator-facing impacts in actionable terms: what operators MUST do before activation, what can wait until after activation, expected resource/fee/monitoring changes, and failure modes if they do not upgrade in time.
 
 #### 9. Testing and Validation
 
@@ -115,22 +127,33 @@ Link to the implementation (PR/commit/branch) and any related design docs.
 
 ## Status Lifecycle
 
+Normal path:
+
 ```
-draft → final → activated → superseded (optional)
+draft → final → activated
+```
+
+Replacement path (if activation is withdrawn before it goes live):
+
+```
+draft → final → superseded
 ```
 
 - **draft**: Specification is being developed, subject to change
-- **final**: Specification is complete, activation height set, awaiting activation
+- **final**: Specification is complete, activation trigger is set (height-based or rollout-gated), awaiting activation
 - **activated**: Upgrade is live on mainnet
-- **superseded**: A newer upgrade replaces this one (set `superseded_by` field)
+- **superseded**: This upgrade plan was replaced before activation and is not the current deployment target (set `superseded_by` to the replacement version when known)
+
+An activated historical upgrade may still have `superseded_by` populated to record release-track lineage.
 
 ## Process
 
 1. **Draft**: Author creates spec file with `status = "draft"`
 2. **Review**: Reviewers listed in frontmatter review the spec
-3. **Finalize**: After review, set `status = "final"` and determine activation height
-4. **Announce**: Publish spec at least 1 month before activation
-5. **Activate**: After activation height is reached, set `status = "activated"`
+3. **Finalize**: After review, set `status = "final"` and determine activation mechanism (height-based or rollout-gated with `activation_height = 0`)
+4. **Announce**: For scheduled activations, publish spec at least 1 month before activation
+5. **Activate**: After the activation condition is met (height reached or coordinated rollout complete), set `status = "activated"`
+6. **Replace (optional)**: If a finalized plan is replaced before activation, set `status = "superseded"` and set `superseded_by` to the replacement version
 
 ## Versioning Rules
 

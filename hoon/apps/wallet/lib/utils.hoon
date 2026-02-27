@@ -44,10 +44,13 @@
       (count-seed-words:spends:transact [raw-spends page-num])
     =/  witness-count=@
       (count-witness-words [raw-spends input-display page-num])
-    ::  match consensus formula: outputs at base-fee, inputs at base-fee/divisor
+    ::  match consensus formula:
+    ::    - pre-bythos: legacy base-fee (2x current base-fee), no input discount
+    ::    - post-bythos: configured base-fee with discounted input fees
+    =/  effective-base-fee=@  ?:(bythos-active base-fee.bc (mul 2 base-fee.bc))
     =/  witness-divisor=@  ?:(bythos-active input-fee-divisor.bc 1)
-    =/  seed-fee=@  (mul seeds-count base-fee.bc)
-    =/  witness-fee=@  (div (mul witness-count base-fee.bc) witness-divisor)
+    =/  seed-fee=@  (mul seeds-count effective-base-fee)
+    =/  witness-fee=@  (div (mul witness-count effective-base-fee) witness-divisor)
     =/  word-fee=@  (add seed-fee witness-fee)
     (max word-fee min-fee.data.bc)
   ::

@@ -33,6 +33,11 @@ test:
 fmt:
 	cargo fmt
 
+.PHONY: docs-check
+docs-check:
+	./scripts/docs/check_docs_metadata.sh
+	./scripts/docs/check_canonical_links.sh
+
 .PHONY: build-hoonc
 build-hoonc: nuke-hoonc-data ## Build hoonc from this repo
 	$(call show_env_vars)

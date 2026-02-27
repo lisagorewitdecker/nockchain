@@ -1,5 +1,10 @@
 # Bridge Contract Deployment Guide
 
+Status: Active
+Owner: Nockchain Maintainers
+Last Reviewed: 2026-02-20
+Canonical/Legacy: Legacy (bridge contracts deployment guide; canonical docs spine starts at [`START_HERE.md`](../../../START_HERE.md))
+
 This guide covers deploying, upgrading, and managing the bridge contracts
 (`MessageInbox` behind an ERC-1967 proxy plus the `Nock` ERC-20) on Tenderly
 networks (devnets, simulations, or proxied mainnets).
@@ -9,7 +14,7 @@ networks (devnets, simulations, or proxied mainnets).
 For a quick deployment to a new Tenderly devnet:
 
 ```bash
-cd open/crates/bridge/contracts
+cd crates/bridge/contracts
 
 # 1. Install dependencies
 make install
@@ -44,7 +49,7 @@ make deploy
 ### Install Tools
 
 ```bash
-cd open/crates/bridge/contracts
+cd crates/bridge/contracts
 make install
 ```
 
@@ -60,7 +65,7 @@ One-time setup per machine:
 
 ```bash
 tenderly login
-tenderly project link littel_wolfur/bridge-contracts
+tenderly project link <your-account>/<your-project>
 ```
 
 ## 2. Environment Configuration
@@ -225,10 +230,11 @@ make validate DEPLOYMENTS_PATH=deployments/base-sepolia.json
 The validation script checks:
 
 - Proxy points to correct implementation
-- Bridge nodes are configured
-- Nock token connected to inbox
-- Ownership is set
-- Initial state is correct (withdrawals enabled, zero burns)
+- Nock token points to the inbox proxy (`nock.inbox()`)
+- All five bridge nodes are non-zero and unique
+- Threshold is `3`
+- Withdrawals are enabled
+- Owner is set (non-zero)
 
 ### Inspect Deployment
 
@@ -277,14 +283,17 @@ The MessageInbox uses UUPS (Universal Upgradeable Proxy Standard) for upgrades.
 - [ ] Gas usage acceptable (<200k for deposits)
 - [ ] Owner key secure and accessible
 
-See [UPGRADE_GUIDE.md](docs/UPGRADE_GUIDE.md) for detailed upgrade procedures.
+See [UPGRADE_GUIDE.md](UPGRADE_GUIDE.md) for detailed upgrade procedures.
 
 ### Quick Upgrade
 
 ```bash
 # Set INBOX_PRIVATE_KEY in .env (must be owner)
+# Set DEPLOYMENTS_PATH if not using deployments.json
 make upgrade
 ```
+
+`make upgrade` prompts for interactive confirmation (`yes`).
 
 ### Upgrade Steps
 
@@ -308,6 +317,8 @@ make upgrade
 
 3. **Validate upgrade**:
    ```bash
+   # make validate compares on-chain impl against messageInboxImplementation in DEPLOYMENTS_PATH.
+   # If your deployment file was not updated, validation will fail.
    make validate
    make integration-test
    ```
@@ -591,6 +602,6 @@ cast send $PROXY_ADDRESS "updateBridgeNode(uint256,address)" 0 0xNewAddress \
 
 ## Additional Resources
 
-- [UPGRADE_GUIDE.md](docs/UPGRADE_GUIDE.md) - Detailed upgrade procedures
+- [UPGRADE_GUIDE.md](UPGRADE_GUIDE.md) - Detailed upgrade procedures
 - [tenderly.env.example](tenderly.env.example) - Legacy env example
 - [environments/](environments/) - Pre-configured environment examples

@@ -28,7 +28,7 @@ The initial cutover height in `0.1.8` was superseded during rollout coordination
 
 ## Technical Specification
 
-`open/hoon/common/tx-engine-1.hoon` changed default constants:
+`hoon/common/tx-engine-1.hoon` changed default constants:
 
 - `v1-phase: 37350 -> 39000`
 
@@ -99,4 +99,4 @@ Release timing, monitoring, and incident playbooks had to be updated to the new 
 
 - Commit: `eedbe8dd9`
 - Files:
-  - `open/hoon/common/tx-engine-1.hoon`
+  - `hoon/common/tx-engine-1.hoon`

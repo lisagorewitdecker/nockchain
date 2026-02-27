@@ -91,4 +91,4 @@ Consensus safety still depends on checkpoint-table parity across nodes.
 
 - Commit: `3b825759e`
 - Files:
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`

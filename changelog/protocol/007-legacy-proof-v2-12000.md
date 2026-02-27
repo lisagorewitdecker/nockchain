@@ -28,7 +28,7 @@ This upgrade extended proof-version gating to a third phase. At `height >= 12000
 
 ## Technical Specification
 
-`open/hoon/apps/dumbnet/lib/consensus.hoon` updated `height-to-proof-version`:
+`hoon/apps/dumbnet/lib/consensus.hoon` updated `height-to-proof-version`:
 
 - `height >= 12000` -> `%2`
 - `6750 <= height < 12000` -> `%1`
@@ -94,4 +94,4 @@ Release timing around `11999/12000` is critical for mining infrastructure.
 
 - Commit: `e4ada66c3`
 - Files:
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`

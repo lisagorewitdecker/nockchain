@@ -167,7 +167,7 @@
           ::    max-size: maximum number of leaves in the data field noun
           ::    min-fee:  minimum fee (in nicks)
           data=[max-size=2.048 min-fee=256]
-          ::  base fee per word for witness and note-data storage
+          ::  post-bythos base fee per word for witness and note-data storage
           base-fee=(bex 14)
           ::  divisor for input fees (inputs cost 1/divisor of outputs)
           input-fee-divisor=4

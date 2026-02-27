@@ -917,14 +917,17 @@
     |=  [sps=form page-num=page-number]
     ^-  coins
     =/  bythos-active=?  (gte page-num bythos-phase)
+    ::  bythos halves base-fee at activation; pre-bythos uses legacy 2x rate
+    =/  effective-base-fee=coins
+      ?:(bythos-active base-fee (mul 2 base-fee))
     =/  seed-word-count=@  (count-seed-words [sps page-num])
     =/  witness-word-count=@  (count-witness-words [sps page-num])
     ::  inputs pay discounted fee only at/after bythos activation
     =/  witness-divisor=@  ?:(bythos-active input-fee-divisor 1)
-    ::  outputs (seeds) pay full base-fee per word
-    =/  seed-fee=coins  (mul seed-word-count base-fee)
-    ::  inputs (witnesses) pay base-fee / input-fee-divisor per word
-    =/  witness-fee=coins  (div (mul witness-word-count base-fee) witness-divisor)
+    ::  outputs (seeds) pay full effective-base-fee per word
+    =/  seed-fee=coins  (mul seed-word-count effective-base-fee)
+    ::  inputs (witnesses) pay effective-base-fee / input-fee-divisor per word
+    =/  witness-fee=coins  (div (mul witness-word-count effective-base-fee) witness-divisor)
     =/  word-fee=coins  (add seed-fee witness-fee)
     (max word-fee min-fee.data)
   --

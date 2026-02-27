@@ -28,7 +28,7 @@ At launch, early history selection depended on normal chain validation and accum
 
 ## Technical Specification
 
-`open/hoon/apps/dumbnet/lib/consensus.hoon` added `checkpointed-digests`:
+`hoon/apps/dumbnet/lib/consensus.hoon` added `checkpointed-digests`:
 
 - `144 -> 3rbqdep8HLqwwkW4YvZazVPYZpbqsFbqHCfEKGt13GVUUzA9ToDCsxT`
 
@@ -92,4 +92,4 @@ Operators must keep checkpoint maps identical across nodes. Mismatched maps are 
 
 - Commit: `8f4b65633`
 - Files:
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`

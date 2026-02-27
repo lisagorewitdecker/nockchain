@@ -91,4 +91,4 @@ Node fleets with mixed checkpoint tables can split at `4032`.
 
 - Commit: `b8cf14101`
 - Files:
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`

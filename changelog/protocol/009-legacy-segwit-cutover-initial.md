@@ -30,7 +30,7 @@ The pre-upgrade engine mixed legacy assumptions (sig-keyed coinbase, v0 note mod
 
 ### Engine and Type Split
 
-`open/hoon/common/tx-engine.hoon` was refactored into a versioned facade over:
+`hoon/common/tx-engine.hoon` was refactored into a versioned facade over:
 
 - `tx-engine-0` (legacy rules)
 - `tx-engine-1` (new rules)
@@ -135,9 +135,9 @@ Runbooks had to track `v1-phase` precisely and coordinate across nodes, miners, 
 
 - Commit: `985350734`
 - Files:
-  - `open/hoon/common/tx-engine.hoon`
-  - `open/hoon/common/tx-engine-0.hoon`
-  - `open/hoon/common/tx-engine-1.hoon`
-  - `open/hoon/apps/dumbnet/lib/consensus.hoon`
-  - `open/hoon/apps/dumbnet/lib/types.hoon`
-  - `open/hoon/apps/dumbnet/inner.hoon`
+  - `hoon/common/tx-engine.hoon`
+  - `hoon/common/tx-engine-0.hoon`
+  - `hoon/common/tx-engine-1.hoon`
+  - `hoon/apps/dumbnet/lib/consensus.hoon`
+  - `hoon/apps/dumbnet/lib/types.hoon`
+  - `hoon/apps/dumbnet/inner.hoon`
