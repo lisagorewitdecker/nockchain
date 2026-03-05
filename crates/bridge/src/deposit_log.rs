@@ -14,8 +14,8 @@ use tracing::{info, warn};
 use crate::bridge_status::BridgeStatus;
 use crate::config::NonceEpochConfig;
 use crate::errors::BridgeError;
-use crate::ethereum::BaseBridge;
 use crate::metrics;
+use crate::ports::BaseContractPort;
 use crate::schema::deposit_log;
 use crate::stop::StopHandle;
 use crate::tui::state::TuiStatus;
@@ -667,8 +667,8 @@ pub async fn sync_deposit_log_from_hashchain(
     Ok(inserted)
 }
 
-pub async fn validate_deposit_log_against_chain_nonce_prefix(
-    base_bridge: Arc<BaseBridge>,
+pub async fn validate_deposit_log_against_chain_nonce_prefix<B: BaseContractPort>(
+    base_bridge: Arc<B>,
     deposit_log: Arc<DepositLog>,
     nonce_epoch: NonceEpochConfig,
 ) -> Result<(), BridgeError> {

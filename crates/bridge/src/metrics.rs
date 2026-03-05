@@ -8,6 +8,9 @@ use crate::tui::types::NetworkState;
 metrics_struct![
     BridgeHealthMetrics,
     (running_status, "bridge.health.running_status", Gauge),
+    (stop_local_requests, "bridge.stop.local.requests", Count),
+    (stop_local_triggered, "bridge.stop.local.triggered", Count),
+    (stop_local_duplicate, "bridge.stop.local.duplicate", Count),
     (base_hold_height, "bridge.health.base_hold_height", Gauge),
     (nock_hold_height, "bridge.health.nock_hold_height", Gauge),
     (base_block_height, "bridge.health.base_block_height", Gauge),
