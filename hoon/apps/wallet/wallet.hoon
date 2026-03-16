@@ -34,7 +34,7 @@
   ^-  state:wt
   |^
   |-
-  ?:  ?=(%5 -.old)
+  ?:  ?=(%6 -.old)
     old
   ~>  %slog.[0 'load: State upgrade required']
   ?-  -.old
@@ -43,6 +43,7 @@
     %2  $(old state-2-3)
     %3  $(old state-3-4)
     %4  $(old state-4-5)
+    %5  $(old state-5-6)
   ==
   ::
   ++  state-0-1
@@ -120,10 +121,21 @@
     ==
   ::
   ++  state-4-5
-    ^-  state:wt
+    ^-  state-5:wt
     ?>  ?=(%4 -.old)
     ~>  %slog.[0 'upgrade version 4 to 5']
     :*  %5
+        balance.old
+        active-master.old
+        keys.old
+        *blockchain-constants:transact
+    ==
+  ::
+  ++  state-5-6
+    ^-  state:wt
+    ?>  ?=(%5 -.old)
+    ~>  %slog.[0 'upgrade version 5 to 6']
+    :*  %6
         balance.old
         active-master.old
         keys.old

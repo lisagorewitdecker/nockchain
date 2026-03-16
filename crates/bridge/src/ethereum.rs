@@ -25,6 +25,7 @@ use crate::bridge_status::BridgeStatus;
 use crate::core::base_observer::{plan_base_tick, BasePlanAction, BasePlanInput, BasePlanState};
 use crate::errors::BridgeError;
 use crate::loop_policy::BaseObserverLoopPolicy;
+use crate::metrics;
 use crate::ports::{BaseContractPort, BaseSourcePort};
 use crate::runtime::{BaseBlockBatch, BridgeEvent, BridgeRuntimeHandle, ChainEvent};
 use crate::stop::StopHandle;
@@ -504,31 +505,38 @@ impl BaseBridge {
                     continue;
                 }
             };
+            let chain_tip = match (|| async { self.deps.provider.get_block_number().await })
+                .retry(rpc_backoff())
+                .when(is_rate_limit_error)
+                .notify(|err, dur| {
+                    warn!(
+                        target: "bridge.base.observer",
+                        error=%err,
+                        backoff_secs = dur.as_secs(),
+                        "failed to get block number, will retry"
+                    );
+                })
+                .await
+            {
+                Ok(tip) => {
+                    metrics::update_base_tip_height(Some(tip));
+                    Some(tip)
+                }
+                Err(e) => {
+                    metrics::update_base_tip_height(None);
+                    error!(
+                        target: "bridge.base.observer",
+                        error=%e,
+                        "failed to get block number after retries"
+                    );
+                    None
+                }
+            };
             let state = if base_hold_active {
                 BasePlanState::HoldActive
             } else {
-                let chain_tip = match (|| async { self.deps.provider.get_block_number().await })
-                    .retry(rpc_backoff())
-                    .when(is_rate_limit_error)
-                    .notify(|err, dur| {
-                        warn!(
-                            target: "bridge.base.observer",
-                            error=%err,
-                            backoff_secs = dur.as_secs(),
-                            "failed to get block number, will retry"
-                        );
-                    })
-                    .await
-                {
-                    Ok(tip) => tip,
-                    Err(e) => {
-                        error!(
-                            target: "bridge.base.observer",
-                            error=%e,
-                            "failed to get block number after retries"
-                        );
-                        continue;
-                    }
+                let Some(chain_tip) = chain_tip else {
+                    continue;
                 };
                 let next_needed_height =
                     match self.deps.runtime_handle.peek_base_next_height().await {

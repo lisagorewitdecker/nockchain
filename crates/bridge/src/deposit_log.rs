@@ -262,6 +262,18 @@ impl DepositLog {
         })
     }
 
+    /// Return the maximum nonce present in the log at/after the epoch start key.
+    pub async fn max_nonce_in_epoch(
+        &self,
+        epoch: &NonceEpochConfig,
+    ) -> Result<Option<u64>, BridgeError> {
+        let count = self.number_of_deposits_in_epoch(epoch).await?;
+        if count == 0 {
+            return Ok(None);
+        }
+        Ok(Some(epoch.first_epoch_nonce().saturating_add(count - 1)))
+    }
+
     /// Fetch a single entry by nonce, if it exists in the epoch window.
     /// Returns None if the nonce is before the epoch or beyond the log length.
     pub async fn get_by_nonce(
@@ -664,6 +676,8 @@ pub async fn sync_deposit_log_from_hashchain(
         "deposit log sync from nock hashchain complete"
     );
 
+    metrics::advance_deposit_log_max_nonce(inserted, nonce_epoch.first_epoch_nonce());
+
     Ok(inserted)
 }
 
@@ -805,6 +819,8 @@ pub async fn persist_commit_nock_deposits_requests(
             inserted += 1;
         }
     }
+
+    metrics::advance_deposit_log_max_nonce(inserted, nonce_epoch.first_epoch_nonce());
 
     Ok(inserted)
 }
@@ -1386,12 +1402,28 @@ mod tests {
         };
 
         assert_eq!(log.number_of_deposits_in_epoch(&epoch).await.unwrap(), 2);
+        assert_eq!(log.max_nonce_in_epoch(&epoch).await.unwrap(), Some(51));
         assert_eq!(log.max_block_height(&epoch).await.unwrap(), Some(11));
 
         let rows = log.records_from_nonce(50, 10, &epoch).await.unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].1.tx_id, anchor.tx_id);
         assert_eq!(rows[1].1.tx_id, next.tx_id);
+    }
+
+    #[tokio::test]
+    async fn max_nonce_in_epoch_is_none_for_empty_epoch() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("deposit-log.sqlite");
+        let log = DepositLog::open(path).await.unwrap();
+
+        let epoch = NonceEpochConfig {
+            base: 50,
+            start_height: 10,
+            start_tx_id: None,
+        };
+
+        assert_eq!(log.max_nonce_in_epoch(&epoch).await.unwrap(), None);
     }
 
     #[tokio::test]

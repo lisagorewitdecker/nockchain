@@ -351,6 +351,14 @@
         bc=blockchain-constants:transact
     ==
   ::
+  +$  state-6
+    $:  %6
+        balance=balance-v4
+        active-master=active-v4
+        keys=keys-v4
+        bc=blockchain-constants:transact
+    ==
+  ::
   ::  $versioned-state: wallet state
   ::
   +$  versioned-state
@@ -360,9 +368,10 @@
         state-3
         state-4
         state-5
+        state-6
     ==
   ::
-  +$  state  $>(%5 versioned-state)
+  +$  state  $>(%6 versioned-state)
   ::
   +$  seed-name   $~('default-seed' @t)
   ::
