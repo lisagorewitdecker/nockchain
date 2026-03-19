@@ -28,13 +28,13 @@ pub mod colors;
 
 use colors::*;
 use nockapp::noun::slab::{Jammer, NounSlab};
+use nockchain_types::fakenet_blockchain_constants;
 use nockvm::jets::hot::HotEntry;
 use nockvm::noun::{D, T, YES};
 use nockvm_macros::tas;
 use tracing::{debug, info, instrument};
 
 use crate::mining::{MiningKeyConfig, MiningPkhConfig};
-use crate::setup::fakenet_blockchain_constants;
 
 /// Module for handling driver initialization signals
 pub mod driver_init {

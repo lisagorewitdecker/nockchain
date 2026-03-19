@@ -218,6 +218,10 @@ Displays the aggregate wallet balance, including the total number of notes and t
 We support transactions with any amount of input notes going to any number of recipients.
 
 ```bash
+# Auto-select spendable notes and compute fee
+nockchain-wallet create-tx \
+  --recipient '{"kind":"p2pkh","address":"<p2pkh-b58>","amount":10000}'
+
 # Send to a single P2PKH recipient
 nockchain-wallet create-tx \
   --names "[first1 last1],[first2 last2]" \
@@ -235,8 +239,8 @@ Gifts and fees are denominated in nicks (65536 nicks = 1 nock).
 
 #### Common Parameters
 
-- The `names` argument is a list of `[first-name last-name]` pairs specifying funding notes
-- The `fee` argument is the transaction fee to pay (in nicks, 65536 nicks to 1 nock)
+- The optional `names` argument is a list of `[first-name last-name]` pairs for manual note selection; omit it to auto-select spendable notes
+- The optional `fee` argument overrides the planner-computed fee (in nicks, 65536 nicks to 1 nock)
 - Provide multiple `--recipient` flags to fan out to several outputs
 - Each `--recipient` is either a JSON object (preferred) or a legacy `<p2pkh>:<amount>` string
 - `address`/`addresses` fields expect base58-encoded pay-to-pubkey-hash values

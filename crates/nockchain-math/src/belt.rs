@@ -37,6 +37,12 @@ pub const ORDER: u64 = 2_u64.pow(32);
     Default,
 )]
 #[repr(transparent)]
+/// Prime-field element modulo [`PRIME`].
+///
+/// Do not blanket-convert with `D(belt.0)` when encoding nouns. A `Belt` value
+/// may be valid in the field but still exceed the atom direct-immediate limit
+/// (`DIRECT_MAX`). Always allocate through `Atom::new` (or equivalent) so large
+/// field elements are encoded correctly.
 pub struct Belt(pub u64);
 
 impl SerdeSerialize for Belt {
@@ -79,6 +85,7 @@ macro_rules! based {
 // Manual implementation for Belt to encode/decode as atom
 impl NounEncode for Belt {
     fn to_noun<A: nockvm::noun::NounAllocator>(&self, allocator: &mut A) -> nockvm::noun::Noun {
+        // Intentionally avoid `D(self.0)`: field elements can be above DIRECT_MAX.
         nockvm::noun::Atom::new(allocator, self.0).as_noun()
     }
 }

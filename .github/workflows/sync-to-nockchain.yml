@@ -12,7 +12,7 @@ on:
         default: false
         type: boolean
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: "*/30 * * * *"
 
 concurrency:
   group: sync-to-nockchain-master

@@ -458,7 +458,7 @@
             dat=transaction
             sign-keys=(unit (list [child-index=@ud hardened=?]))
         ==
-        [%fakenet ~]
+        [%fakenet constants=blockchain-constants:transact]
     ==
   +$  file-cause
     $%  [%write path=@t contents=@t success=?]

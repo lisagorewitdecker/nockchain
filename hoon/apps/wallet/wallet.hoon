@@ -28,6 +28,7 @@
     debug  debug:utils
     warn  warn:utils
     wt  ~(. wallet-types bc.state)
+    t  ~(. transact bc.state)
 ::
 ++  load
   |=  old=versioned-state:wt
@@ -155,6 +156,9 @@
       [%balance ~]
     ``balance.state
     ::
+      [%blockchain-constants ~]
+    ``bc.state
+    ::
       [%state ~]
     ``state
     ::
@@ -193,6 +197,27 @@
     ?:  ?=(%1 -.coil)
       ~
     `~(address to-b58:coil:wt coil)
+    ::
+    ::  returns tracked first-name lock cache entries in machine-readable form
+      [%tracked-locks ~]
+    :+  ~
+      ~
+    watch-first-name-locks:get:v
+    ::
+    ::  returns signer key hashes for the current master key:
+    ::  [signer-pkh]
+      [%signing-keys ~]
+    :+  ~
+      ~
+    =/  signer-seckeys=(list schnorr-seckey:transact)
+      ~[(sign-key:get:v ~)]
+    %+  turn  signer-seckeys
+    |=  sk=schnorr-seckey:transact
+    =/  signer-pkh=hash:transact
+      %-  hash:schnorr-pubkey:transact
+      %-  from-sk:schnorr-pubkey:transact
+      (to-atom:schnorr-seckey:transact sk)
+    signer-pkh
   ==
 ::
 ++  poke
@@ -251,7 +276,7 @@
         %show-master-zprv  (do-show-master-zprv cause)
         %list-master-addresses  (do-list-master-addresses cause)
         %set-active-master-address  (do-set-active-master-address cause)
-        %fakenet               [[%exit 0]~ state(bc bc.state(coinbase-timelock-min 1))]
+        %fakenet               [[%exit 0]~ state(bc constants.cause)]
     ::
         %file
       ?-    +<.cause
@@ -1174,8 +1199,8 @@
       ?^  -.note  %.n
       ::  look for coinbase notes with target-pkh
       ::  or notes with simple 1-of-1 lock containing
-      =+  simple-fn=(simple:v1:first-name:transact target-pkh)
-      =+  coinbase-fn=(coinbase:v1:first-name:transact target-pkh)
+      =+  simple-fn=(simple:v1:first-name:t target-pkh)
+      =+  coinbase-fn=(coinbase:v1:first-name:t target-pkh)
       ?|  =(simple-fn -.name.note)
           =(coinbase-fn -.name.note)
       ==
@@ -1226,8 +1251,8 @@
       ?^  -.note  %.n
       ::  look for coinbase notes with target-pkh
       ::  or notes with simple 1-of-1 lock containing
-      =+  simple-fn=(simple:v1:first-name:transact target-pkh)
-      =+  coinbase-fn=(coinbase:v1:first-name:transact target-pkh)
+      =+  simple-fn=(simple:v1:first-name:t target-pkh)
+      =+  coinbase-fn=(coinbase:v1:first-name:t target-pkh)
       ?|  =(simple-fn -.name.note)
           =(coinbase-fn -.name.note)
       ==

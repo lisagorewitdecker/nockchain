@@ -237,12 +237,7 @@ impl From<SpendCondition> for PbSpendCondition {
 
 impl From<Pkh> for PbPkhLock {
     fn from(pkh: Pkh) -> Self {
-        let mut hashes = pkh
-            .hashes
-            .into_iter()
-            .map(PbHash::from)
-            .collect::<Vec<PbHash>>();
-        hashes.dedup();
+        let hashes = pkh.hashes.into_iter().map(PbHash::from).collect::<Vec<_>>();
         PbPkhLock { m: pkh.m, hashes }
     }
 }
@@ -258,8 +253,7 @@ impl From<LockTim> for PbLockTim {
 
 impl From<Hax> for PbHaxLock {
     fn from(hax: Hax) -> Self {
-        let mut hashes = hax.0.into_iter().map(PbHash::from).collect::<Vec<PbHash>>();
-        hashes.dedup();
+        let hashes = hax.0.into_iter().map(PbHash::from).collect::<Vec<_>>();
         PbHaxLock { hashes }
     }
 }
@@ -431,7 +425,7 @@ impl TryFrom<PbLockPrimitive> for LockPrimitive {
                     .into_iter()
                     .map(v1::Hash::try_from)
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(LockPrimitive::Pkh(Pkh { m: pkh.m, hashes }))
+                Ok(LockPrimitive::Pkh(Pkh::new(pkh.m, hashes)))
             }
             lock_primitive::Primitive::Tim(tim) => Ok(LockPrimitive::Tim(LockTim {
                 rel: tim.rel.required("LockTim", "rel")?.into(),
@@ -443,7 +437,7 @@ impl TryFrom<PbLockPrimitive> for LockPrimitive {
                     .into_iter()
                     .map(v1::Hash::try_from)
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(LockPrimitive::Hax(Hax(hashes)))
+                Ok(LockPrimitive::Hax(Hax::new(hashes)))
             }
             lock_primitive::Primitive::Burn(_) => Ok(LockPrimitive::Burn),
         }
@@ -546,11 +540,59 @@ impl TryFrom<PbWitnessSpend> for Spend1 {
     }
 }
 
+impl TryFrom<PbSpend> for V1Spend {
+    type Error = ConversionError;
+    fn try_from(spend: PbSpend) -> Result<Self, Self::Error> {
+        match spend.spend_kind.required("Spend", "spend_kind")? {
+            spend::SpendKind::Legacy(legacy) => Ok(V1Spend::Legacy(Spend0::try_from(legacy)?)),
+            spend::SpendKind::Witness(witness) => Ok(V1Spend::Witness(Spend1::try_from(witness)?)),
+        }
+    }
+}
+
+impl TryFrom<PbSpendEntry> for (Name, V1Spend) {
+    type Error = ConversionError;
+    fn try_from(entry: PbSpendEntry) -> Result<Self, Self::Error> {
+        Ok((
+            v0::Name::try_from(entry.name.required("SpendEntry", "name")?)?,
+            V1Spend::try_from(entry.spend.required("SpendEntry", "spend")?)?,
+        ))
+    }
+}
+
+impl TryFrom<PbRawTransaction> for V1RawTx {
+    type Error = ConversionError;
+    fn try_from(tx: PbRawTransaction) -> Result<Self, Self::Error> {
+        let version_value = tx.version.required("RawTransaction", "version")?.value;
+
+        let version = match version_value {
+            1 => v1::Version::V1,
+            _ => return Err(ConversionError::Invalid("invalid version")),
+        };
+
+        let spends = tx
+            .spends
+            .into_iter()
+            .map(<(Name, V1Spend)>::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(V1RawTx {
+            version,
+            id: v0::Hash::try_from(tx.id.required("RawTransaction", "id")?)?,
+            spends: nockchain_types::tx_engine::v1::Spends(spends),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use nockchain_types::tx_engine::common::Hash;
+    use nockchain_types::tx_engine::common::{Hash, Name, Nicks, Version};
 
     use super::*;
+
+    fn sample_hash(seed: u64) -> Hash {
+        Hash::from_limbs(&[seed, seed + 1, seed + 2, seed + 3, seed + 4])
+    }
 
     fn sample_spend_condition() -> SpendCondition {
         SpendCondition::new(vec![LockPrimitive::Burn])
@@ -612,48 +654,184 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
-}
 
-impl TryFrom<PbSpend> for V1Spend {
-    type Error = ConversionError;
-    fn try_from(spend: PbSpend) -> Result<Self, Self::Error> {
-        match spend.spend_kind.required("Spend", "spend_kind")? {
-            spend::SpendKind::Legacy(legacy) => Ok(V1Spend::Legacy(Spend0::try_from(legacy)?)),
-            spend::SpendKind::Witness(witness) => Ok(V1Spend::Witness(Spend1::try_from(witness)?)),
-        }
-    }
-}
-
-impl TryFrom<PbSpendEntry> for (Name, V1Spend) {
-    type Error = ConversionError;
-    fn try_from(entry: PbSpendEntry) -> Result<Self, Self::Error> {
-        Ok((
-            v0::Name::try_from(entry.name.required("SpendEntry", "name")?)?,
-            V1Spend::try_from(entry.spend.required("SpendEntry", "spend")?)?,
-        ))
-    }
-}
-
-impl TryFrom<PbRawTransaction> for V1RawTx {
-    type Error = ConversionError;
-    fn try_from(tx: PbRawTransaction) -> Result<Self, Self::Error> {
-        let version_value = tx.version.required("RawTransaction", "version")?.value;
-
-        let version = match version_value {
-            1 => v1::Version::V1,
-            _ => return Err(ConversionError::Invalid("invalid version")),
+    #[test]
+    fn test_pkh_lock_decode_canonicalizes_hash_set() {
+        let hash_a = sample_hash(11);
+        let hash_b = sample_hash(21);
+        let pb = PbLockPrimitive {
+            primitive: Some(lock_primitive::Primitive::Pkh(PbPkhLock {
+                m: 2,
+                hashes: vec![
+                    PbHash::from(hash_b.clone()),
+                    PbHash::from(hash_a.clone()),
+                    PbHash::from(hash_b.clone()),
+                ],
+            })),
         };
 
-        let spends = tx
-            .spends
-            .into_iter()
-            .map(<(Name, V1Spend)>::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
+        let decoded = LockPrimitive::try_from(pb).expect("decode pkh lock");
+        let expected = LockPrimitive::Pkh(Pkh::new(2, vec![hash_a, hash_b]));
+        assert_eq!(decoded, expected);
 
-        Ok(V1RawTx {
-            version,
-            id: v0::Hash::try_from(tx.id.required("RawTransaction", "id")?)?,
-            spends: nockchain_types::tx_engine::v1::Spends(spends),
-        })
+        let roundtrip = PbLockPrimitive::from(decoded.clone());
+        let decoded_roundtrip = LockPrimitive::try_from(roundtrip).expect("re-decode pkh lock");
+        assert_eq!(decoded_roundtrip, expected);
+    }
+
+    #[test]
+    fn test_hax_lock_decode_canonicalizes_hash_set() {
+        let hash_a = sample_hash(31);
+        let hash_b = sample_hash(41);
+        let pb = PbLockPrimitive {
+            primitive: Some(lock_primitive::Primitive::Hax(PbHaxLock {
+                hashes: vec![
+                    PbHash::from(hash_b.clone()),
+                    PbHash::from(hash_a.clone()),
+                    PbHash::from(hash_b.clone()),
+                ],
+            })),
+        };
+
+        let decoded = LockPrimitive::try_from(pb).expect("decode hax lock");
+        let expected = LockPrimitive::Hax(Hax::new(vec![hash_a, hash_b]));
+        assert_eq!(decoded, expected);
+
+        let roundtrip = PbLockPrimitive::from(decoded.clone());
+        let decoded_roundtrip = LockPrimitive::try_from(roundtrip).expect("re-decode hax lock");
+        assert_eq!(decoded_roundtrip, expected);
+    }
+
+    #[test]
+    fn test_spend_condition_decode_canonicalizes_nested_set_locks() {
+        let pkh_a = sample_hash(51);
+        let pkh_b = sample_hash(61);
+        let hax_a = sample_hash(71);
+        let hax_b = sample_hash(81);
+        let pb = PbSpendCondition {
+            primitives: vec![
+                PbLockPrimitive {
+                    primitive: Some(lock_primitive::Primitive::Pkh(PbPkhLock {
+                        m: 2,
+                        hashes: vec![
+                            PbHash::from(pkh_b.clone()),
+                            PbHash::from(pkh_a.clone()),
+                            PbHash::from(pkh_b.clone()),
+                        ],
+                    })),
+                },
+                PbLockPrimitive {
+                    primitive: Some(lock_primitive::Primitive::Hax(PbHaxLock {
+                        hashes: vec![
+                            PbHash::from(hax_b.clone()),
+                            PbHash::from(hax_a.clone()),
+                            PbHash::from(hax_b.clone()),
+                        ],
+                    })),
+                },
+                PbLockPrimitive {
+                    primitive: Some(lock_primitive::Primitive::Burn(PbBurnLock {})),
+                },
+            ],
+        };
+
+        let decoded = SpendCondition::try_from(pb).expect("decode spend condition");
+        let expected = SpendCondition::new(vec![
+            LockPrimitive::Pkh(Pkh::new(2, vec![pkh_a, pkh_b])),
+            LockPrimitive::Hax(Hax::new(vec![hax_a, hax_b])),
+            LockPrimitive::Burn,
+        ]);
+        assert_eq!(decoded, expected);
+
+        let roundtrip = PbSpendCondition::from(decoded.clone());
+        let decoded_roundtrip =
+            SpendCondition::try_from(roundtrip).expect("re-decode spend condition");
+        assert_eq!(decoded_roundtrip, expected);
+    }
+
+    #[test]
+    fn test_raw_transaction_roundtrip_canonicalizes_nested_set_locks() {
+        let pkh_a = sample_hash(91);
+        let pkh_b = sample_hash(101);
+        let hax_a = sample_hash(111);
+        let hax_b = sample_hash(121);
+        let expected = V1RawTx {
+            version: Version::V1,
+            id: sample_hash(131),
+            spends: nockchain_types::tx_engine::v1::Spends(vec![(
+                Name::new(sample_hash(141), sample_hash(151)),
+                V1Spend::Witness(Spend1 {
+                    witness: V1Witness::new(
+                        LockMerkleProof::new_stub(
+                            SpendCondition::new(vec![
+                                LockPrimitive::Pkh(Pkh::new(2, vec![pkh_a.clone(), pkh_b.clone()])),
+                                LockPrimitive::Hax(Hax::new(vec![hax_a.clone(), hax_b.clone()])),
+                            ]),
+                            42,
+                            sample_merkle_proof(),
+                        ),
+                        PkhSignature(Vec::new()),
+                        Vec::new(),
+                    ),
+                    seeds: nockchain_types::tx_engine::v1::Seeds(Vec::new()),
+                    fee: Nicks(7),
+                }),
+            )]),
+        };
+
+        let mut pb = PbRawTransaction::from(expected.clone());
+        let spend = pb.spends.first_mut().expect("raw tx spend entry");
+        let witness = match spend
+            .spend
+            .as_mut()
+            .and_then(|spend| spend.spend_kind.as_mut())
+            .expect("witness spend kind")
+        {
+            spend::SpendKind::Witness(witness) => witness,
+            other => panic!("expected witness spend, got {other:?}"),
+        };
+        let lock_merkle_proof = witness
+            .witness
+            .as_mut()
+            .and_then(|witness| witness.lock_merkle_proof.as_mut())
+            .expect("lock merkle proof");
+        let primitives = &mut lock_merkle_proof
+            .spend_condition
+            .as_mut()
+            .expect("spend condition")
+            .primitives;
+
+        match primitives
+            .get_mut(0)
+            .and_then(|primitive| primitive.primitive.as_mut())
+            .expect("pkh primitive")
+        {
+            lock_primitive::Primitive::Pkh(pkh) => {
+                pkh.hashes = vec![
+                    PbHash::from(pkh_b.clone()),
+                    PbHash::from(pkh_a.clone()),
+                    PbHash::from(pkh_b.clone()),
+                ];
+            }
+            other => panic!("expected pkh primitive, got {other:?}"),
+        }
+
+        match primitives
+            .get_mut(1)
+            .and_then(|primitive| primitive.primitive.as_mut())
+            .expect("hax primitive")
+        {
+            lock_primitive::Primitive::Hax(hax) => {
+                hax.hashes = vec![
+                    PbHash::from(hax_b.clone()),
+                    PbHash::from(hax_a.clone()),
+                    PbHash::from(hax_b.clone()),
+                ];
+            }
+            other => panic!("expected hax primitive, got {other:?}"),
+        }
+
+        let decoded = V1RawTx::try_from(pb).expect("decode raw transaction");
+        assert_eq!(decoded, expected);
     }
 }
