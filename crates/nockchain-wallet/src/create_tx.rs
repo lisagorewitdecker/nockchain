@@ -1,3 +1,5 @@
+use wallet_tx_builder::types::CandidateNote;
+
 use super::*;
 
 pub(crate) fn ensure_manual_planner_parity(
@@ -172,6 +174,48 @@ impl Wallet {
             .join(",")
     }
 
+    /// Determines whether a manual note set is all-v1 or all-v0.
+    /// Missing notes are ignored here so planner manual-mode errors can report them.
+    fn manual_candidate_version_policy(
+        note_names: &[Name],
+        candidates: &[CandidateNote],
+    ) -> Result<CandidateVersionPolicy, String> {
+        if note_names.is_empty() {
+            return Err("manual mode requires at least one note name".to_string());
+        }
+
+        let mut found_v0 = false;
+        let mut found_v1 = false;
+
+        for name in note_names {
+            let Some(candidate) = candidates
+                .iter()
+                .find(|candidate| candidate.identity().name == *name)
+            else {
+                return Err(format!(
+                    "manual mode references unknown note {}/{}",
+                    name.first.to_base58(),
+                    name.last.to_base58()
+                ));
+            };
+
+            match candidate.version() {
+                nockchain_types::tx_engine::common::Version::V0 => found_v0 = true,
+                _ => found_v1 = true,
+            }
+        }
+
+        match (found_v0, found_v1) {
+            (true, false) => Ok(CandidateVersionPolicy::V0Only),
+            (false, true) => Ok(CandidateVersionPolicy::V1Only),
+            (false, false) => Err("manual mode requires at least one note name".to_string()),
+            (true, true) => Err(
+                "manual create-tx cannot mix v0 and v1 notes; select notes from only one version"
+                    .to_string(),
+            ),
+        }
+    }
+
     /// Maps CLI ordering strategy onto planner selection order semantics.
     fn planner_order_direction(strategy: NoteSelectionStrategyCli) -> SelectionOrder {
         match strategy {
@@ -231,6 +275,10 @@ impl Wallet {
         Ok(Self::planner_signer_keys(signer_keys))
     }
 
+    async fn peek_signing_pubkeys(&mut self) -> Result<Vec<SchnorrPubkey>, NockAppError> {
+        self.peek_signing_pubkeys_at_path("signing-pubkeys").await
+    }
+
     async fn peek_signing_keys_at_path(
         &mut self,
         path_tag: &str,
@@ -244,6 +292,21 @@ impl Wallet {
         let maybe_signing_keys: Option<Option<Vec<Hash>>> =
             unsafe { <Option<Option<Vec<Hash>>>>::from_noun(result.root())? };
         Ok(maybe_signing_keys.flatten().unwrap_or_default())
+    }
+
+    async fn peek_signing_pubkeys_at_path(
+        &mut self,
+        path_tag: &str,
+    ) -> Result<Vec<SchnorrPubkey>, NockAppError> {
+        let mut slab = NounSlab::new();
+        let tracked_tag = make_tas(&mut slab, path_tag).as_noun();
+        let path = T(&mut slab, &[tracked_tag, SIG]);
+        slab.set_root(path);
+
+        let result = self.app.peek(slab).await?;
+        let maybe_signing_pubkeys: Option<Option<Vec<SchnorrPubkey>>> =
+            unsafe { <Option<Option<Vec<SchnorrPubkey>>>>::from_noun(result.root())? };
+        Ok(maybe_signing_pubkeys.flatten().unwrap_or_default())
     }
 
     #[cfg(test)]
@@ -324,12 +387,18 @@ impl Wallet {
             candidate_preview
         );
 
-        let selection_mode = match names.as_deref() {
+        let manual_note_names = match names.as_deref() {
             Some(raw_names) => match Self::parse_note_names_as_hashes(raw_names) {
-                Ok(note_names) => SelectionMode::Manual { note_names },
+                Ok(note_names) => Some(note_names),
                 Err(err) => {
                     return planner_error(format!("unable to parse manual note names: {err}"));
                 }
+            },
+            None => None,
+        };
+        let selection_mode = match &manual_note_names {
+            Some(note_names) => SelectionMode::Manual {
+                note_names: note_names.clone(),
             },
             None => SelectionMode::Auto,
         };
@@ -346,6 +415,23 @@ impl Wallet {
         } else {
             None
         };
+        let candidate_version_policy = match &manual_note_names {
+            Some(note_names) => {
+                match Self::manual_candidate_version_policy(note_names, &snapshot.candidates) {
+                    Ok(policy) => policy,
+                    Err(err) => {
+                        return planner_error(err);
+                    }
+                }
+            }
+            None => CandidateVersionPolicy::V1Only,
+        };
+        if candidate_version_policy == CandidateVersionPolicy::V0Only && parsed_refund_pkh.is_none()
+        {
+            return planner_error(
+                "manual create-tx spending legacy v0 notes requires --refund-pkh".to_string(),
+            );
+        }
         if !sign_keys.is_empty() {
             info!(
                 "create-tx planner spendability matching currently uses only the wallet master key"
@@ -368,6 +454,24 @@ impl Wallet {
         );
         let Some(master_signer_pkh) = signer_keys.first().cloned() else {
             return planner_error("wallet has no signer keys for create-tx planner".to_string());
+        };
+        let legacy_signer_pubkeys = if candidate_version_policy == CandidateVersionPolicy::V0Only {
+            let signer_pubkeys = match self.peek_signing_pubkeys().await {
+                Ok(keys) => keys,
+                Err(err) => {
+                    return planner_error(format!(
+                        "unable to read signing pubkeys from wallet state: {err}"
+                    ));
+                }
+            };
+            let Some(master_signer_pubkey) = signer_pubkeys.first().cloned() else {
+                return planner_error(
+                    "wallet has no signer pubkeys for legacy create-tx planner".to_string(),
+                );
+            };
+            vec![master_signer_pubkey]
+        } else {
+            Vec::new()
         };
         // Today lock matching is constrained to the master signer key only.
         // We can expand this matcher input to include additional signing keys later.
@@ -417,9 +521,9 @@ impl Wallet {
             coinbase_relative_min
         );
         let order_direction = Self::planner_order_direction(note_selection);
-        let candidate_version_policy = CandidateVersionPolicy::V1Only;
 
         let request = PlanRequest {
+            planning_mode: PlanningMode::Standard,
             selection_mode: selection_mode.clone(),
             order_direction,
             include_data,
@@ -438,6 +542,7 @@ impl Wallet {
             recipient_outputs,
             refund_output: refund_output_template,
             coinbase_relative_min: Some(coinbase_relative_min),
+            v0_migration_signer_pubkeys: legacy_signer_pubkeys,
         };
 
         let matcher = SigningKeyLockMatcher::from_signer_keys(&matcher_signer_keys);
@@ -450,9 +555,8 @@ impl Wallet {
                 found_plan
             }
             Err(err @ PlanError::CandidateVersionDisabled { .. }) => {
-                // TODO(wallet): add a dedicated v0 fan-in command that runs planner selection in V0Only mode.
                 return Err(CrownError::Unknown(format!(
-                    "create-tx planner only selects v1 notes; use the dedicated v0 fan-in command for legacy notes ({})",
+                    "create-tx planner rejected the manual note set because it does not match the selected note version policy ({})",
                     err
                 ))
                 .into());
@@ -500,6 +604,169 @@ impl Wallet {
         Self::create_tx(
             planned_names_arg, recipients, final_fee, allow_low_fee, refund_pkh, sign_keys,
             include_data, save_raw_tx, note_selection,
+        )
+    }
+
+    /// Plans a full-sweep migration of spendable v0 notes into one v1 destination.
+    pub(crate) async fn migrate_v0_notes_with_planner(
+        &mut self,
+        synced_snapshot: Option<NormalizedSnapshot>,
+        destination: String,
+    ) -> CommandNoun<NounSlab> {
+        let planner_error = |reason: String| -> CommandNoun<NounSlab> {
+            Err(CrownError::Unknown(format!("migrate-v0-notes planner failed: {}", reason)).into())
+        };
+
+        let destination_hash = match Hash::from_base58(&destination) {
+            Ok(hash) => hash,
+            Err(err) => {
+                return planner_error(format!(
+                    "invalid migration destination '{}' : {}",
+                    destination, err
+                ));
+            }
+        };
+        let snapshot = if let Some(snapshot) = synced_snapshot {
+            snapshot
+        } else {
+            let balance = match self.peek_balance_state().await {
+                Ok(balance) => balance,
+                Err(err) => {
+                    return planner_error(format!(
+                        "unable to read synced balance from wallet state: {err}"
+                    ));
+                }
+            };
+            match normalize_balance_pages(&[balance]) {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    return planner_error(format!(
+                        "candidate normalization failed for wallet balance snapshot: {err}"
+                    ));
+                }
+            }
+        };
+        let v0_candidate_count = snapshot
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.version() == nockchain_types::tx_engine::common::Version::V0
+            })
+            .count();
+        info!(
+            "migrate-v0-notes snapshot block={} height={:?} candidates_total={} candidates_v0={}",
+            snapshot.metadata.block_id.to_base58(),
+            snapshot.metadata.height,
+            snapshot.candidates.len(),
+            v0_candidate_count,
+        );
+
+        let signer_pubkeys = match self.peek_signing_pubkeys().await {
+            Ok(keys) => keys,
+            Err(err) => {
+                return planner_error(format!(
+                    "unable to read signing pubkeys from wallet state: {err}"
+                ));
+            }
+        };
+        let Some(master_signer_pubkey) = signer_pubkeys.first().cloned() else {
+            return planner_error(
+                "wallet has no signer pubkeys for migrate-v0-notes planner".to_string(),
+            );
+        };
+        let destination_output = match planner_recipient_outputs(
+            &[RecipientSpec::P2pkh {
+                address: destination_hash.clone(),
+                amount: 0,
+            }],
+            true,
+        ) {
+            Ok(mut outputs) => outputs
+                .pop()
+                .expect("single migration recipient should yield one planner output"),
+            Err(err) => {
+                return planner_error(format!(
+                    "unable to derive migration destination output from recipient: {err}"
+                ));
+            }
+        };
+        let planner_constants = match self.peek_planner_blockchain_constants().await {
+            Ok(constants) => constants,
+            Err(err) => {
+                return planner_error(format!(
+                    "unable to read blockchain constants from wallet state: {err}"
+                ));
+            }
+        };
+        let coinbase_relative_min = match planner_constants.coinbase_timelock_min() {
+            Ok(min) => min,
+            Err(err) => {
+                return planner_error(format!(
+                    "unable to resolve coinbase timelock min from blockchain constants: {err}"
+                ));
+            }
+        };
+        let request = PlanRequest {
+            planning_mode: PlanningMode::V0MigrationSweep { destination_output },
+            selection_mode: SelectionMode::Auto,
+            order_direction: SelectionOrder::Ascending,
+            include_data: true,
+            chain_context: ChainContext {
+                height: snapshot.metadata.height.clone(),
+                bythos_phase: nockchain_types::tx_engine::common::BlockHeight(
+                    nockchain_math::belt::Belt(planner_constants.bythos_phase),
+                ),
+                base_fee: planner_constants.base_fee,
+                input_fee_divisor: planner_constants.input_fee_divisor,
+                min_fee: planner_constants.data.min_fee,
+            },
+            signer_pkh: None,
+            candidate_version_policy: CandidateVersionPolicy::V0Only,
+            candidates: snapshot.candidates,
+            recipient_outputs: Vec::new(),
+            refund_output: planner_refund_output_template(
+                Some(&destination_hash),
+                &destination_hash,
+                true,
+            )
+            .expect("p2pkh migration refund template should build"),
+            coinbase_relative_min: Some(coinbase_relative_min),
+            v0_migration_signer_pubkeys: vec![master_signer_pubkey],
+        };
+
+        let plan = match plan_create_tx(&request, &SigningKeyLockMatcher::default()) {
+            Ok(found_plan) => found_plan,
+            Err(err) => {
+                return planner_error(format!("planner returned an error: {err}"));
+            }
+        };
+
+        for trace in &plan.debug_trace {
+            info!("migrate-v0-notes planner trace: {}", trace);
+        }
+
+        let planned_names = plan
+            .selected
+            .iter()
+            .map(|selected| selected.name.clone())
+            .collect::<Vec<_>>();
+        let Some(sweep_output) = plan.outputs.first() else {
+            return planner_error("migration planner returned no destination output".to_string());
+        };
+
+        Self::create_tx(
+            Self::format_note_names_for_create_tx(&planned_names),
+            vec![RecipientSpec::P2pkh {
+                address: destination_hash.clone(),
+                amount: sweep_output.amount,
+            }],
+            plan.final_fee,
+            false,
+            Some(destination_hash.to_base58()),
+            Vec::new(),
+            true,
+            false,
+            NoteSelectionStrategyCli::Ascending,
         )
     }
 
@@ -844,5 +1111,109 @@ impl Wallet {
             pokes: results,
             normalized_snapshot: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nockchain_math::belt::Belt;
+    use nockchain_math::crypto::cheetah::A_GEN;
+    use nockchain_types::tx_engine::common::{BlockHeight, Nicks, SchnorrPubkey};
+    use nockchain_types::tx_engine::v0::Lock as V0Lock;
+    use wallet_tx_builder::note_data::DecodedNoteData;
+    use wallet_tx_builder::types::{
+        CandidateIdentity, CandidateV0Note, CandidateV1Note, CandidateVersionPolicy,
+    };
+
+    use super::*;
+
+    fn hash(v: u64) -> Hash {
+        Hash::from_limbs(&[v, 0, 0, 0, 0])
+    }
+
+    fn name(first: u64, last: u64) -> Name {
+        Name::new(hash(first), hash(last))
+    }
+
+    fn candidate_v0(first: u64, last: u64) -> CandidateNote {
+        CandidateNote::V0(CandidateV0Note {
+            identity: CandidateIdentity {
+                name: name(first, last),
+                origin_page: BlockHeight(Belt(1)),
+            },
+            assets: Nicks(1),
+            lock: V0Lock {
+                keys_required: 1,
+                pubkeys: vec![SchnorrPubkey(A_GEN)],
+            },
+            timelock: None,
+        })
+    }
+
+    fn candidate_v1(first: u64, last: u64) -> CandidateNote {
+        CandidateNote::V1(CandidateV1Note {
+            identity: CandidateIdentity {
+                name: name(first, last),
+                origin_page: BlockHeight(Belt(1)),
+            },
+            assets: Nicks(1),
+            raw_note_data: Vec::new(),
+            decoded_note_data: DecodedNoteData(Vec::new()),
+        })
+    }
+
+    #[test]
+    fn manual_candidate_version_policy_returns_v0_only_for_all_v0_manual_sets() {
+        let note_names = vec![name(1, 10), name(2, 20)];
+        let candidates = vec![candidate_v0(1, 10), candidate_v0(2, 20), candidate_v1(3, 30)];
+
+        let policy =
+            Wallet::manual_candidate_version_policy(&note_names, &candidates).expect("policy");
+
+        assert_eq!(policy, CandidateVersionPolicy::V0Only);
+    }
+
+    #[test]
+    fn manual_candidate_version_policy_returns_v1_only_for_all_v1_manual_sets() {
+        let note_names = vec![name(3, 30)];
+        let candidates = vec![candidate_v0(1, 10), candidate_v1(3, 30)];
+
+        let policy =
+            Wallet::manual_candidate_version_policy(&note_names, &candidates).expect("policy");
+
+        assert_eq!(policy, CandidateVersionPolicy::V1Only);
+    }
+
+    #[test]
+    fn manual_candidate_version_policy_rejects_mixed_manual_sets() {
+        let note_names = vec![name(1, 10), name(3, 30)];
+        let candidates = vec![candidate_v0(1, 10), candidate_v1(3, 30)];
+
+        let err = Wallet::manual_candidate_version_policy(&note_names, &candidates)
+            .expect_err("mixed version note set should error");
+
+        assert_eq!(
+            err,
+            "manual create-tx cannot mix v0 and v1 notes; select notes from only one version"
+        );
+    }
+
+    #[test]
+    fn manual_candidate_version_policy_rejects_missing_manual_notes() {
+        let missing = name(9, 90);
+        let note_names = vec![missing.clone()];
+        let candidates = vec![candidate_v0(1, 10), candidate_v1(3, 30)];
+
+        let err = Wallet::manual_candidate_version_policy(&note_names, &candidates)
+            .expect_err("missing note should error");
+
+        assert_eq!(
+            err,
+            format!(
+                "manual mode references unknown note {}/{}",
+                missing.first.to_base58(),
+                missing.last.to_base58()
+            )
+        );
     }
 }

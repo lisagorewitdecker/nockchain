@@ -218,6 +218,18 @@
       %-  from-sk:schnorr-pubkey:transact
       (to-atom:schnorr-seckey:transact sk)
     signer-pkh
+    ::
+    ::  returns signer pubkeys for the current master key:
+    ::  [signer-pubkey]
+      [%signing-pubkeys ~]
+    :+  ~
+      ~
+    =/  signer-seckeys=(list schnorr-seckey:transact)
+      ~[(sign-key:get:v ~)]
+    %+  turn  signer-seckeys
+    |=  sk=schnorr-seckey:transact
+    %-  from-sk:schnorr-pubkey:transact
+    (to-atom:schnorr-seckey:transact sk)
   ==
 ::
 ++  poke

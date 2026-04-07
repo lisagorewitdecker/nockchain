@@ -34,6 +34,7 @@ use command::{
 };
 use kernels_open_wallet::KERNEL;
 use nockapp::driver::*;
+use nockapp::drivers::one_punch::OnePunchWire;
 use nockapp::kernel::boot::{self, NockStackSize};
 use nockapp::noun::slab::{NockJammer, NounSlab};
 use nockapp::utils::bytes::Byts;
@@ -69,7 +70,7 @@ use wallet_tx_builder::adapter::{
 use wallet_tx_builder::lock_resolver::LockMatcher;
 use wallet_tx_builder::planner::{plan_create_tx, PlanError};
 use wallet_tx_builder::types::{
-    CandidateVersionPolicy, ChainContext, PlanRequest, SelectionMode, SelectionOrder,
+    CandidateVersionPolicy, ChainContext, PlanRequest, PlanningMode, SelectionMode, SelectionOrder,
 };
 use zkvm_jetpack::hot::produce_prover_hot_state;
 
@@ -316,6 +317,10 @@ async fn main() -> Result<(), NockAppError> {
             // Planner-backed create-tx runs after sync once we have a fresh snapshot.
             Wallet::show_balance()
         }
+        Commands::MigrateV0Notes { .. } => {
+            // Planner-backed v0 migration runs after sync once we have a fresh snapshot.
+            Wallet::show_balance()
+        }
         Commands::SignMultisigTx {
             transaction,
             sign_keys,
@@ -428,6 +433,12 @@ async fn main() -> Result<(), NockAppError> {
             .await?;
     }
 
+    if let Commands::MigrateV0Notes { destination } = &cli.command {
+        poke = wallet
+            .migrate_v0_notes_with_planner(synced_snapshot_for_planner.take(), destination.clone())
+            .await?;
+    }
+
     wallet
         .app
         .add_io_driver(one_punch_driver(poke.0, poke.1))
@@ -477,7 +488,7 @@ impl Wallet {
         let constants = default_fakenet_blockchain_constants();
         let constants_noun = constants.to_noun(&mut slab);
         let (poke, _) = Self::wallet("fakenet", &[constants_noun], Operation::Poke, &mut slab)?;
-        let wire = SystemWire.to_wire();
+        let wire = OnePunchWire::Poke.to_wire();
         let _ = self.app.poke(wire, poke).await?;
         Ok(())
     }

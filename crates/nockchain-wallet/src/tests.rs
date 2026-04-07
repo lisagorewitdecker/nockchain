@@ -2,28 +2,37 @@
 // TODO: all these tests need to also validate the results and not
 // just ensure that the wallet can be poked with the expected noun.
 
+use std::collections::BTreeMap;
 use std::sync::Once;
 
 use nockapp::kernel::boot::{self, Cli as BootCli};
 use nockapp::wire::SystemWire;
 use nockapp::{exit_driver, AtomExt, Bytes};
 use nockchain_math::belt::Belt;
+use nockchain_math::zoon::zmap::ZMap;
 use nockchain_types::default_fakenet_blockchain_constants;
-use nockchain_types::tx_engine::common::{BlockHeight, BlockHeightDelta, Nicks};
-use nockchain_types::tx_engine::v0;
+use nockchain_types::tx_engine::common::{BlockHeight, BlockHeightDelta, Nicks, Signature};
 use nockchain_types::tx_engine::v1::note::{NoteData, NoteDataEntry};
 use nockchain_types::tx_engine::v1::tx::{Lock, LockPrimitive, Pkh, SpendCondition};
-use nockvm::noun::Slots;
-use noun_serde::NounEncode;
+use nockchain_types::tx_engine::{v0, v1};
+use nockvm::noun::{Slots, T};
+use noun_serde::{NounDecode, NounEncode};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
-use wallet_tx_builder::types::RawNoteDataEntry;
+use wallet_tx_builder::adapter::normalize_balance_pages;
+use wallet_tx_builder::fee::{compute_minimum_fee, FeeInputs};
+use wallet_tx_builder::planner::plan_create_tx;
+use wallet_tx_builder::types::{
+    CandidateVersionPolicy, ChainContext, PlanRequest, PlanningMode, RawNoteDataEntry,
+    SelectionMode, SelectionOrder,
+};
 
 use super::*;
 use crate::create_tx::{
     ensure_manual_planner_parity, PlannerBlockchainConstantsNoun, PlannerNoteDataConstantsNoun,
     SigningKeyLockMatcher,
 };
+use crate::recipient::{planner_recipient_outputs, RecipientSpec};
 
 static INIT: Once = Once::new();
 
@@ -70,6 +79,13 @@ fn simple_pkh_lock(pkh: Hash) -> Lock {
     ))]))
 }
 
+fn simple_v0_lock(pubkey: SchnorrPubkey) -> v0::Lock {
+    v0::Lock {
+        keys_required: 1,
+        pubkeys: vec![pubkey],
+    }
+}
+
 fn note_data_from_raw_entries(entries: Vec<RawNoteDataEntry>) -> NoteData {
     NoteData::new(
         entries
@@ -89,6 +105,216 @@ fn note_v1_with_lock(name: Name, origin_page: u64, assets: u64, lock: Lock) -> v
     ))
 }
 
+fn note_v0_with_lock(name: Name, origin_page: u64, assets: u64, lock: v0::Lock) -> v1::Note {
+    v1::Note::V0(v0::NoteV0 {
+        head: v0::NoteHead {
+            version: nockchain_types::tx_engine::common::Version::V0,
+            origin_page: BlockHeight(Belt(origin_page)),
+            timelock: v0::Timelock(None),
+        },
+        tail: v0::NoteTail {
+            name,
+            lock,
+            source: nockchain_types::tx_engine::common::Source {
+                hash: hash(origin_page + assets),
+                is_coinbase: false,
+            },
+            assets: Nicks(assets as usize),
+        },
+    })
+}
+
+fn noun_leaf_count(noun: nockapp::Noun) -> u64 {
+    if noun.is_atom() {
+        return 1;
+    }
+    let cell = noun.as_cell().expect("noun should decode as cell");
+    noun_leaf_count(cell.head()).saturating_add(noun_leaf_count(cell.tail()))
+}
+
+fn word_count_from_noun_encode<T: NounEncode>(value: &T) -> u64 {
+    let mut slab: NounSlab = NounSlab::new();
+    let noun = value.to_noun(&mut slab);
+    noun_leaf_count(noun)
+}
+
+fn merged_seed_word_count(spends: &v1::Spends) -> u64 {
+    let mut merged_by_lock_root = BTreeMap::<[u64; 5], BTreeMap<String, Bytes>>::new();
+
+    for (_, spend) in &spends.0 {
+        let seeds = match spend {
+            v1::Spend::Legacy(spend0) => &spend0.seeds.0,
+            v1::Spend::Witness(spend1) => &spend1.seeds.0,
+        };
+
+        for seed in seeds {
+            let merged = merged_by_lock_root
+                .entry(seed.lock_root.to_array())
+                .or_default();
+            for note_data_entry in seed.note_data.iter() {
+                merged.insert(note_data_entry.key.clone(), note_data_entry.blob.clone());
+            }
+        }
+    }
+
+    merged_by_lock_root
+        .into_values()
+        .map(|merged| {
+            let entries = merged
+                .into_iter()
+                .map(|(key, blob)| NoteDataEntry::new(key, blob))
+                .collect::<Vec<_>>();
+            word_count_from_noun_encode(&NoteData::new(entries))
+        })
+        .sum()
+}
+
+fn witness_word_count(spends: &v1::Spends) -> u64 {
+    spends
+        .0
+        .iter()
+        .map(|(_, spend)| match spend {
+            v1::Spend::Legacy(spend0) => word_count_from_noun_encode(&spend0.signature),
+            v1::Spend::Witness(spend1) => word_count_from_noun_encode(&spend1.witness),
+        })
+        .sum()
+}
+
+fn total_paid_fee(spends: &v1::Spends) -> u64 {
+    spends
+        .0
+        .iter()
+        .map(|(_, spend)| match spend {
+            v1::Spend::Legacy(spend0) => spend0.fee.0 as u64,
+            v1::Spend::Witness(spend1) => spend1.fee.0 as u64,
+        })
+        .sum()
+}
+
+fn total_seed_gift(spends: &v1::Spends) -> u64 {
+    spends
+        .0
+        .iter()
+        .flat_map(|(_, spend)| match spend {
+            v1::Spend::Legacy(spend0) => spend0.seeds.0.iter(),
+            v1::Spend::Witness(spend1) => spend1.seeds.0.iter(),
+        })
+        .map(|seed| seed.gift.0 as u64)
+        .sum()
+}
+
+fn decode_saved_transaction_spends(effects: &[NounSlab]) -> Result<v1::Spends, NockAppError> {
+    let tx_bytes = effects
+        .iter()
+        .find_map(|effect| {
+            let noun = unsafe { effect.root() };
+            let cell = noun.as_cell().ok()?;
+            let tag = cell.head().as_atom().ok()?.into_string().ok()?;
+            if tag != "file" {
+                return None;
+            }
+            let op_cell = cell.tail().as_cell().ok()?;
+            let op_tag = op_cell.head().as_atom().ok()?.into_string().ok()?;
+            if op_tag != "write" {
+                return None;
+            }
+            let write_cell = op_cell.tail().as_cell().ok()?;
+            let path = write_cell.head().as_atom().ok()?.into_string().ok()?;
+            if !path.ends_with(".tx") {
+                return None;
+            }
+            Some(Bytes::copy_from_slice(
+                write_cell.tail().as_atom().ok()?.as_ne_bytes(),
+            ))
+        })
+        .ok_or_else(|| NockAppError::OtherError("missing saved transaction file effect".into()))?;
+
+    let mut slab: NounSlab = NounSlab::new();
+    let transaction_noun = slab.cue_into(tx_bytes)?;
+    let transaction_cell = transaction_noun.as_cell().map_err(|err| {
+        NockAppError::OtherError(format!("transaction jam root not a cell: {err}"))
+    })?;
+    let version = <u64 as NounDecode>::from_noun(&transaction_cell.head()).map_err(|err| {
+        NockAppError::OtherError(format!("transaction version did not decode: {err}"))
+    })?;
+    if version != 1 {
+        return Err(NockAppError::OtherError(format!(
+            "expected saved transaction version 1, got {version}"
+        )));
+    }
+    let name_and_rest = transaction_cell.tail().as_cell().map_err(|err| {
+        NockAppError::OtherError(format!("transaction jam missing name/rest cell: {err}"))
+    })?;
+    let spends_and_rest = name_and_rest.tail().as_cell().map_err(|err| {
+        NockAppError::OtherError(format!("transaction jam missing spends/rest cell: {err}"))
+    })?;
+    let mut spends = v1::Spends::from_noun(&spends_and_rest.head()).map_err(|err| {
+        NockAppError::OtherError(format!("saved transaction spends did not decode: {err}"))
+    })?;
+    let display_and_witness = spends_and_rest.tail().as_cell().map_err(|err| {
+        NockAppError::OtherError(format!(
+            "transaction jam missing display/witness-data cell: {err}"
+        ))
+    })?;
+    let witness_data = display_and_witness.tail();
+    let witness_cell = witness_data.as_cell().map_err(|err| {
+        NockAppError::OtherError(format!("transaction jam witness-data not a cell: {err}"))
+    })?;
+    let witness_tag = <u64 as NounDecode>::from_noun(&witness_cell.head()).map_err(|err| {
+        NockAppError::OtherError(format!("witness-data tag did not decode: {err}"))
+    })?;
+    match witness_tag {
+        0 => {
+            let signatures =
+                ZMap::<Name, Signature>::from_noun(&witness_cell.tail()).map_err(|err| {
+                    NockAppError::OtherError(format!(
+                        "legacy witness-data signature map did not decode: {err}"
+                    ))
+                })?;
+            for (name, signature) in signatures.into_entries() {
+                let Some((_, v1::Spend::Legacy(spend0))) = spends
+                    .0
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == name)
+                else {
+                    return Err(NockAppError::OtherError(format!(
+                        "legacy witness-data referenced unknown spend {} / {}",
+                        name.first.to_base58(),
+                        name.last.to_base58()
+                    )));
+                };
+                spend0.signature = signature;
+            }
+        }
+        1 => {
+            let witnesses =
+                ZMap::<Name, v1::Witness>::from_noun(&witness_cell.tail()).map_err(|err| {
+                    NockAppError::OtherError(format!("v1 witness-data map did not decode: {err}"))
+                })?;
+            for (name, witness) in witnesses.into_entries() {
+                let Some((_, v1::Spend::Witness(spend1))) = spends
+                    .0
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == name)
+                else {
+                    return Err(NockAppError::OtherError(format!(
+                        "witness-data referenced unknown spend {} / {}",
+                        name.first.to_base58(),
+                        name.last.to_base58()
+                    )));
+                };
+                spend1.witness = witness;
+            }
+        }
+        other => {
+            return Err(NockAppError::OtherError(format!(
+                "unsupported witness-data tag {other}"
+            )));
+        }
+    }
+    Ok(spends)
+}
+
 fn format_note_names(names: &[Name]) -> String {
     names
         .iter()
@@ -104,6 +330,16 @@ async fn peek_signing_keys(wallet: &mut Wallet) -> Result<Vec<Hash>, NockAppErro
 
     let result = wallet.app.peek(slab).await?;
     let decoded: Option<Option<Vec<Hash>>> = unsafe { Option::from_noun(result.root())? };
+    Ok(decoded.flatten().unwrap_or_default())
+}
+
+async fn peek_signing_pubkeys(wallet: &mut Wallet) -> Result<Vec<SchnorrPubkey>, NockAppError> {
+    let mut slab = NounSlab::new();
+    let tag = make_tas(&mut slab, "signing-pubkeys").as_noun();
+    slab.modify(|_| vec![tag, SIG]);
+
+    let result = wallet.app.peek(slab).await?;
+    let decoded: Option<Option<Vec<SchnorrPubkey>>> = unsafe { Option::from_noun(result.root())? };
     Ok(decoded.flatten().unwrap_or_default())
 }
 
@@ -164,6 +400,23 @@ async fn peek_wallet_blockchain_constants(
         NockAppError::OtherError(format!("wallet state missing blockchain constants: {err}"))
     })?)
     .map_err(|err| NockAppError::OtherError(format!("decode blockchain constants failed: {err}")))
+}
+
+async fn peek_balance_state(wallet: &mut Wallet) -> Result<v1::BalanceUpdate, NockAppError> {
+    let mut slab = NounSlab::new();
+    let balance_tag = make_tas(&mut slab, "balance").as_noun();
+    let path = T(&mut slab, &[balance_tag, SIG]);
+    slab.set_root(path);
+
+    let result = wallet.app.peek(slab).await?;
+    let maybe_balance: Option<Option<v1::BalanceUpdate>> =
+        unsafe { <Option<Option<v1::BalanceUpdate>>>::from_noun(result.root())? };
+    match maybe_balance {
+        Some(Some(balance)) => Ok(balance),
+        _ => Err(NockAppError::OtherError(
+            "wallet balance peek returned no balance payload".to_string(),
+        )),
+    }
 }
 
 #[test]
@@ -742,6 +995,233 @@ async fn signing_keys_support_rust_first_name_reconstruction_in_fakenet() -> Res
             signer_pkh.to_base58()
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn migrate_v0_notes_with_planner_emits_tx_effects() -> Result<(), NockAppError> {
+    init_tracing();
+    let (mut wallet, _data_dir) = boot_test_wallet().await?;
+    let seedphrase = "route run sing warrior light swamp clog flower agent ugly wasp fresh tube snow motion salt salon village raccoon chair demise neutral school confirm";
+
+    import_seed_phrase(&mut wallet, seedphrase, 1).await?;
+    wallet.set_fakenet().await?;
+
+    let destination = peek_signing_keys(&mut wallet)
+        .await?
+        .into_iter()
+        .next()
+        .expect("wallet should expose master signer key")
+        .to_base58();
+    let signer_pubkey = peek_signing_pubkeys(&mut wallet)
+        .await?
+        .into_iter()
+        .next()
+        .expect("wallet should expose master signer pubkey");
+
+    let v0_note_name = name(51, 5_151);
+    let v0_note = note_v0_with_lock(
+        v0_note_name.clone(),
+        1,
+        25_000,
+        simple_v0_lock(signer_pubkey),
+    );
+    apply_balance_update(
+        &mut wallet,
+        balance_page(1, 888, vec![(v0_note_name, v0_note)]),
+    )
+    .await?;
+
+    let (noun, _) = wallet
+        .migrate_v0_notes_with_planner(None, destination)
+        .await?;
+    let result = wallet.app.poke(OnePunchWire::Poke.to_wire(), noun).await?;
+    assert!(
+        result.len() > 1,
+        "migrate-v0-notes should emit transaction effects, got {result:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_tx_with_planner_accepts_manual_all_v0_notes() -> Result<(), NockAppError> {
+    init_tracing();
+    let (mut wallet, _data_dir) = boot_test_wallet().await?;
+    let seedphrase = "route run sing warrior light swamp clog flower agent ugly wasp fresh tube snow motion salt salon village raccoon chair demise neutral school confirm";
+
+    import_seed_phrase(&mut wallet, seedphrase, 1).await?;
+    wallet.set_fakenet().await?;
+
+    let destination = peek_signing_keys(&mut wallet)
+        .await?
+        .into_iter()
+        .next()
+        .expect("wallet should expose master signer key");
+    let signer_pubkey = peek_signing_pubkeys(&mut wallet)
+        .await?
+        .into_iter()
+        .next()
+        .expect("wallet should expose master signer pubkey");
+
+    let v0_note_name = name(52, 5_252);
+    let v0_note = note_v0_with_lock(
+        v0_note_name.clone(),
+        1,
+        25_000,
+        simple_v0_lock(signer_pubkey),
+    );
+    apply_balance_update(
+        &mut wallet,
+        balance_page(1, 889, vec![(v0_note_name.clone(), v0_note)]),
+    )
+    .await?;
+
+    let (noun, _) = wallet
+        .create_tx_with_planner(
+            None,
+            Some(format_note_names(std::slice::from_ref(&v0_note_name))),
+            None,
+            vec![RecipientSpec::P2pkh {
+                address: destination.clone(),
+                amount: 20_000,
+            }],
+            false,
+            Some(destination.to_base58()),
+            Vec::new(),
+            true,
+            false,
+            NoteSelectionStrategyCli::Ascending,
+        )
+        .await?;
+    let result = wallet.app.poke(OnePunchWire::Poke.to_wire(), noun).await?;
+    assert!(
+        result.len() > 1,
+        "manual all-v0 create-tx should emit transaction effects, got {result:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn migrate_v0_notes_wallet_tx_matches_planner_word_and_fee_counts() -> Result<(), NockAppError>
+{
+    init_tracing();
+    let (mut wallet, _data_dir) = boot_test_wallet().await?;
+    let seedphrase = "route run sing warrior light swamp clog flower agent ugly wasp fresh tube snow motion salt salon village raccoon chair demise neutral school confirm";
+
+    import_seed_phrase(&mut wallet, seedphrase, 1).await?;
+    wallet.set_fakenet().await?;
+
+    let destination = peek_signing_keys(&mut wallet)
+        .await?
+        .into_iter()
+        .next()
+        .expect("wallet should expose master signer key")
+        .to_base58();
+    let destination_hash = Hash::from_base58(&destination).expect("destination should parse");
+    let signer_keys = peek_signing_keys(&mut wallet).await?;
+    let signer_pubkeys = peek_signing_pubkeys(&mut wallet).await?;
+    let signer_pubkey = signer_pubkeys
+        .first()
+        .cloned()
+        .expect("wallet should expose master signer pubkey");
+
+    let v0_note_name = name(61, 6_161);
+    let v0_note = note_v0_with_lock(
+        v0_note_name.clone(),
+        1,
+        25_000,
+        simple_v0_lock(signer_pubkey),
+    );
+    apply_balance_update(
+        &mut wallet,
+        balance_page(1, 999, vec![(v0_note_name, v0_note)]),
+    )
+    .await?;
+
+    let balance = peek_balance_state(&mut wallet).await?;
+    let snapshot = normalize_balance_pages(&[balance])
+        .map_err(|err| NockAppError::OtherError(format!("snapshot normalization failed: {err}")))?;
+    let mut destination_outputs = planner_recipient_outputs(
+        &[RecipientSpec::P2pkh {
+            address: destination_hash,
+            amount: 0,
+        }],
+        true,
+    )?;
+    let destination_output = destination_outputs
+        .pop()
+        .expect("single migration destination should yield one output");
+    let planner_constants = peek_wallet_blockchain_constants(&mut wallet).await?;
+    let coinbase_relative_min = planner_constants.coinbase_timelock_min()?;
+    let request = PlanRequest {
+        planning_mode: PlanningMode::V0MigrationSweep {
+            destination_output: destination_output.clone(),
+        },
+        selection_mode: SelectionMode::Auto,
+        order_direction: SelectionOrder::Ascending,
+        include_data: true,
+        chain_context: ChainContext {
+            height: snapshot.metadata.height.clone(),
+            bythos_phase: BlockHeight(Belt(planner_constants.bythos_phase)),
+            base_fee: planner_constants.base_fee,
+            input_fee_divisor: planner_constants.input_fee_divisor,
+            min_fee: planner_constants.data.min_fee,
+        },
+        signer_pkh: None,
+        candidate_version_policy: CandidateVersionPolicy::V0Only,
+        candidates: snapshot.candidates.clone(),
+        recipient_outputs: Vec::new(),
+        refund_output: destination_output,
+        coinbase_relative_min: Some(coinbase_relative_min),
+        v0_migration_signer_pubkeys: signer_pubkeys,
+    };
+    let matcher = SigningKeyLockMatcher::from_signer_keys(&signer_keys);
+    let plan = plan_create_tx(&request, &matcher)
+        .map_err(|err| NockAppError::OtherError(format!("planner failed: {err}")))?;
+
+    let (noun, _) = wallet
+        .migrate_v0_notes_with_planner(None, destination.clone())
+        .await?;
+    let effects = wallet.app.poke(OnePunchWire::Poke.to_wire(), noun).await?;
+    let spends = decode_saved_transaction_spends(&effects)?;
+
+    assert_eq!(spends.0.len(), 1, "migration should build one spend");
+    assert!(
+        matches!(spends.0.first(), Some((_, v1::Spend::Legacy(_)))),
+        "migration should build a legacy v0 spend"
+    );
+
+    let hoon_seed_words = merged_seed_word_count(&spends);
+    let hoon_witness_words = witness_word_count(&spends);
+    let hoon_fee = total_paid_fee(&spends);
+    let hoon_gift = total_seed_gift(&spends);
+    let computed_fee = compute_minimum_fee(FeeInputs {
+        seed_words: hoon_seed_words,
+        witness_words: hoon_witness_words,
+        base_fee: request.chain_context.base_fee,
+        input_fee_divisor: request.chain_context.input_fee_divisor,
+        min_fee: request.chain_context.min_fee,
+        height: request.chain_context.height,
+        bythos_phase: request.chain_context.bythos_phase,
+    });
+
+    // A one-input v0 migration on fakenet should emit one merged destination seed
+    // note-data payload and one legacy signature map witness.
+    assert_eq!(hoon_seed_words, 14);
+    assert_eq!(hoon_witness_words, 31);
+    assert_eq!(computed_fee.minimum_fee, 2_784);
+    assert_eq!(hoon_fee, computed_fee.minimum_fee);
+    assert_eq!(hoon_gift, 22_216);
+
+    assert_eq!(plan.word_counts.seed_words, hoon_seed_words);
+    assert_eq!(plan.word_counts.witness_words, hoon_witness_words);
+    assert_eq!(plan.final_fee, computed_fee.minimum_fee);
+    assert_eq!(plan.outputs.len(), 1);
+    assert_eq!(plan.outputs[0].amount, hoon_gift);
+    assert_eq!(plan.selected_total, hoon_fee + hoon_gift);
 
     Ok(())
 }
