@@ -22,7 +22,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 #[cfg(test)]
@@ -401,6 +401,56 @@ async fn main() -> Result<(), NockAppError> {
         }
     }
 
+    if let Commands::MigrateV0Notes { destination } = &cli.command {
+        let mut prepared = wallet
+            .prepare_migrate_v0_notes_per_signer(
+                synced_snapshot_for_planner.take(),
+                destination.clone(),
+            )
+            .await?;
+        if prepared.summary.created_count == 0 {
+            let markdown = Wallet::format_migrate_v0_notes_summary(&prepared.summary);
+            let skin = MadSkin::default_dark();
+            println!("{}", skin.term_text(&markdown));
+            return Err(NockAppError::OtherError(
+                "No v0 migration transactions were created".to_string(),
+            ));
+        }
+
+        let tx_dir = Path::new("txs");
+        let before = Wallet::snapshot_written_txs(tx_dir).await?;
+        let (noun, operation) = prepared.take_poke().ok_or_else(|| {
+            NockAppError::from(CrownError::Unknown(
+                "migrate-v0-notes prepared migration transactions but did not produce a batch create poke"
+                    .to_string(),
+            ))
+        })?;
+        wallet
+            .app
+            .add_io_driver(one_punch_driver(noun, operation))
+            .await;
+        wallet.app.add_io_driver(file_driver()).await;
+        wallet.app.add_io_driver(markdown_driver()).await;
+        wallet.app.add_io_driver(exit_driver()).await;
+
+        match wallet.app.run().await {
+            Ok(_) => {
+                let after = Wallet::snapshot_written_txs(tx_dir).await?;
+                let tx_paths = Wallet::detect_written_tx_paths(&before, &after)?;
+                let summary = prepared.finalize(tx_paths)?;
+                let markdown = Wallet::format_migrate_v0_notes_summary(&summary);
+                let skin = MadSkin::default_dark();
+                println!("{}", skin.term_text(&markdown));
+                info!("Command executed successfully");
+            }
+            Err(e) => {
+                error!("Command failed: {}", e);
+                return Err(e);
+            }
+        }
+        return Ok(());
+    }
+
     if let Commands::CreateTx {
         names,
         recipients,
@@ -430,12 +480,6 @@ async fn main() -> Result<(), NockAppError> {
                 *save_raw_tx,
                 *note_selection_strategy,
             )
-            .await?;
-    }
-
-    if let Commands::MigrateV0Notes { destination } = &cli.command {
-        poke = wallet
-            .migrate_v0_notes_with_planner(synced_snapshot_for_planner.take(), destination.clone())
             .await?;
     }
 

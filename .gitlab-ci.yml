@@ -80,9 +80,7 @@ cargo-test:
         # Install Solidity dependencies for the bridge build script
         make -C crates/bridge/contracts deps
         cargo fmt --all --check
-        # Temporary until op-alloy-network releases the overlap fix:
-        # https://github.com/ethereum-optimism/optimism/pull/19756
-        cargo test --release --locked
+        cargo test --release
       '
 
 sync-to-staging:
@@ -115,6 +113,8 @@ sync-to-staging:
           echo "GITHUB_NOCKCHAIN_STAGING_TOKEN is required for sync-to-staging" >&2
           exit 1
         fi
+
+        cargo generate-lockfile
 
         echo "https://bitemyapp:${GITHUB_NOCKCHAIN_STAGING_TOKEN}@github.com" > ~/.git-credentials
         git config --global credential.helper store

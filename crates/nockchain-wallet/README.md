@@ -259,37 +259,47 @@ nockchain-wallet migrate-v0-notes --destination <v1-p2pkh-b58>
 
 What the command does:
 
-- Syncs the wallet and finds all spendable v0 notes for the active master signer
+- Syncs the wallet and finds spendable v0 notes for the active v0 master and any active v0 child signers under that master
 - Ignores v1 notes
-- Computes the required fee
-- Builds one destination output to the provided v1 address
+- Computes the required fee for each signer bucket
+- Builds one migration transaction per spend-capable signer bucket
+- Writes each saved transaction to `./txs` in the current working directory
 - Uses the destination as the refund target, so any leftover value also comes back as v1
+- Prints a signer-by-signer summary with the saved tx path, selected inputs, fee, expected migrated amount, and the exact `send-tx` command for each created transaction
 
 Typical migration flow:
 
 ```bash
-# 1. Import the legacy seed if you have not already done so
+# 1. Pull the latest wallet code
+git pull origin master
+
+# 2. Rebuild the wallet jams and binary
+make install-nockchain-wallet
+
+# 3. Import the legacy seed if you have not already done so
 nockchain-wallet import-keys \
   --seedphrase "your legacy seed phrase here" \
   --version 0
 
-# 2. Confirm the legacy master address is present
+# 4. Confirm the legacy master address is present
 nockchain-wallet list-master-addresses
 
-# 3. Switch the active master to the v0 key that can spend the legacy notes
+# 5. Switch the active master to the legacy v0 master key that owns the signer tree
 nockchain-wallet set-active-master-address <legacy-v0-master-address>
 
-# 4. Inspect the legacy notes
-nockchain-wallet list-notes-by-address <legacy-v0-master-address>
-
-# 5. Sweep them into a v1 destination
+# 6. Run the migration sweep into your v1 P2PKH destination
 nockchain-wallet migrate-v0-notes --destination <v1-p2pkh-b58>
+
+# 7. Submit each saved transaction shown in the migration summary
+nockchain-wallet send-tx <path-to-tx-file>
 ```
 
 Notes:
 
 - The destination must be a v1 pay-to-pubkey-hash address
 - The command is full-sweep only in the current release
+- The command may create multiple transactions, not just one: it creates up to one migration tx per active local v0 signer under the active master
+- Inspect the migration summary before submitting anything. It tells you which signer each tx belongs to, how many notes were selected, the fee, the expected migrated amount, where the tx was saved, and how to submit it
 - Watch-only imports are not enough; the wallet must hold the matching v0 signing key
 - If you are using the bridge helper scripts, `open/crates/bridge/scripts/wallet.sh --new` imports both the default v1 fakenet key and the legacy v0 fakenet key
 

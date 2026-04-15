@@ -406,6 +406,23 @@
   ::
   ++  key-version  ?(%0 %1)
   ::
+  +$  create-tx-cause
+    $:  names=(list [first=@t last=@t])               ::  base58-encoded name hashes
+        orders=(list order)
+        fee=coins:transact                            ::  fee
+        allow-low-fee=?                               ::  bypass min fee check (unsafe, testing only)
+        sign-keys=(unit (list [child-index=@ud hardened=?]))  ::  child key information to sign from
+        refund-pkh=(unit hash:transact)               ::  refund pkh for spends over v0 notes
+        include-data=?                                ::  whether or not we should include note-data. defaults
+                                                      ::  to yes in cli. not including note-data is a power-user option because
+                                                      ::  if the lock is not a standard 1-of-1 pkh or coinbase, the wallet won't
+                                                      ::  be able to guess it, so the funds could be lost forever if the user.
+                                                      ::  doesn't keep track of the lock.
+        save-raw-tx=?                                 ::  if %.y, saves jams of the raw-tx and its hashable into a txs-debug folder
+                                                      ::  in the current working directory
+        =selection-strategy
+    ==
+  ::
   +$  cause
     $%  [%keygen entropy=byts salt=byts]
         [%derive-child i=@ hardened=? label=(unit @tas)]
@@ -426,22 +443,8 @@
         [%verify-hash hash-b58=@t sig=@ pk-b58=@t]
         [%list-notes-by-address address=@t]                 ::  base58-encoded address
         [%list-notes-by-address-csv address=@t]             ::  base58-encoded address, CSV format
-        $:  %create-tx
-            names=(list [first=@t last=@t])               ::  base58-encoded name hashes
-            orders=(list order)
-            fee=coins:transact                            ::  fee
-            allow-low-fee=?                               ::  bypass min fee check (unsafe, testing only)
-            sign-keys=(unit (list [child-index=@ud hardened=?]))  ::  child key information to sign from
-            refund-pkh=(unit hash:transact)               ::  refund pkh for spends over v0 notes
-            include-data=?                                ::  whether or not we should include note-data. defaults
-                                                          ::  to yes in cli. not including note-data is a power-user option because
-                                                          ::  if the lock is not a standard 1-of-1 pkh or coinbase, the wallet won't
-                                                          ::  be able to guess it, so the funds could be lost forever if the user.
-                                                          ::  doesn't keep track of the lock.
-            save-raw-tx=?                                 ::  if %.y, saves jams of the raw-tx and its hashable into a txs-debug folder
-                                                          ::  in the current working directory
-            =selection-strategy
-        ==
+        [%create-tx =create-tx-cause]
+        [%create-tx-batch requests=(list create-tx-cause)]
         [%list-active-addresses ~]
         [%list-notes ~]
         [%show-key-tree include-values=?]
@@ -571,7 +574,17 @@
     $+  versioned-transaction
     $^(transaction-0 transaction-1)
   ::
-  +$  transaction  transaction-1
++$  transaction  transaction-1
+  ::
+  ::
+  +$  active-signer-info
+    $:  child-index=(unit @ud)
+        hardened=?
+        absolute-index=(unit @ud)
+        version=@
+        pubkey=schnorr-pubkey:transact
+        address-b58=@t
+    ==
   ::
   ::
   +$  nockchain-grpc-effect
